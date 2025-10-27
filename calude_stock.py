@@ -613,4 +613,7 @@ with st.sidebar.expander("SMA Settings"):
     sma_short = st.slider("SMA Short Window", 10, 40, 20)
     sma_long = st.slider("SMA Long Window", 30, 200, 50)
 
-
+# Signal Weights
+st.sidebar.markdown("---")
+st.sidebar.subheader("⚖️ Signal Weights")
+with st.sidebar.
