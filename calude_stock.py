@@ -616,4 +616,6 @@ with st.sidebar.expander("SMA Settings"):
 # Signal Weights
 st.sidebar.markdown("---")
 st.sidebar.subheader("⚖️ Signal Weights")
-with st.sidebar.
+with st.sidebar.expander("Adjust Signal Weights"):
+    w_rsi = st.slider("RSI weight", 0.0, 5.0, 2.0, 0.1)
+    w_macd = st.slider("MACD weight",
