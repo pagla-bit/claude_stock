@@ -616,4 +616,22 @@ with st.sidebar.expander("SMA Settings"):
 # Signal Weights
 st.sidebar.markdown("---")
 st.sidebar.subheader("⚖️ Signal Weights")
-with st.sidebar.
+# Replace the incomplete line at the end with:
+with st.sidebar.expander("Signal Weights"):
+    weight_rsi = st.slider("RSI Weight", 0.0, 3.0, 2.0, 0.1)
+    weight_macd = st.slider("MACD Weight", 0.0, 3.0, 1.5, 0.1)
+    weight_sma = st.slider("SMA Weight", 0.0, 3.0, 1.0, 0.1)
+    weight_bb = st.slider("BB Weight", 0.0, 3.0, 1.0, 0.1)
+    weight_stoch = st.slider("Stochastic Weight", 0.0, 3.0, 0.8, 0.1)
+    weight_volume = st.slider("Volume Weight", 0.0, 2.0, 0.5, 0.1)
+    weight_adx = st.slider("ADX Weight", 0.0, 3.0, 1.0, 0.1)
+
+signal_weights = {
+    'RSI': weight_rsi,
+    'MACD': weight_macd,
+    'SMA': weight_sma,
+    'BB': weight_bb,
+    'Stoch': weight_stoch,
+    'Volume': weight_volume,
+    'ADX': weight_adx
+}
