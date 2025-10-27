@@ -616,4 +616,9 @@ with st.sidebar.expander("SMA Settings"):
 # Signal Weights
 st.sidebar.markdown("---")
 st.sidebar.subheader("⚖️ Signal Weights")
-with st.sidebar.
+with st.sidebar.expander("📈 Backtesting Settings"):
+    initial_capital = st.number_input("Initial Capital ($)", value=10000, step=1000)
+    confidence_threshold = st.slider("Confidence Threshold (%)", 0, 100, 20)
+    stop_loss_pct = st.slider("Stop Loss (%)", 1, 20, 5) / 100
+    take_profit_pct = st.slider("Take Profit (%)", 5, 50, 15) / 100
+
