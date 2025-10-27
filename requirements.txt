@@ -6,3 +6,4 @@ requests
 plotly
 vaderSentiment
 nltk
+scipy
