@@ -616,22 +616,484 @@ with st.sidebar.expander("SMA Settings"):
 # Signal Weights
 st.sidebar.markdown("---")
 st.sidebar.subheader("⚖️ Signal Weights")
-# Replace the incomplete line at the end with:
-with st.sidebar.expander("Signal Weights"):
-    weight_rsi = st.slider("RSI Weight", 0.0, 3.0, 2.0, 0.1)
-    weight_macd = st.slider("MACD Weight", 0.0, 3.0, 1.5, 0.1)
-    weight_sma = st.slider("SMA Weight", 0.0, 3.0, 1.0, 0.1)
-    weight_bb = st.slider("BB Weight", 0.0, 3.0, 1.0, 0.1)
-    weight_stoch = st.slider("Stochastic Weight", 0.0, 3.0, 0.8, 0.1)
-    weight_volume = st.slider("Volume Weight", 0.0, 2.0, 0.5, 0.1)
-    weight_adx = st.slider("ADX Weight", 0.0, 3.0, 1.0, 0.1)
+with st.sidebar.expander("Adjust Signal Weights"):
+    w_rsi = st.slider("RSI weight", 0.0, 5.0, 2.0, 0.1)
+    w_macd = st.slider("MACD weight", 0.0, 5.0, 1.5, 0.1)
+    w_sma = st.slider("SMA weight", 0.0, 5.0, 1.0, 0.1)
+    w_bb = st.slider("BB weight", 0.0, 5.0, 1.0, 0.1)
+    w_stoch = st.slider("Stochastic weight", 0.0, 3.0, 0.8, 0.1)
+    w_vol = st.slider("Volume weight", 0.0, 2.0, 0.5, 0.1)
+    w_adx = st.slider("ADX weight", 0.0, 3.0, 1.0, 0.1)
 
-signal_weights = {
-    'RSI': weight_rsi,
-    'MACD': weight_macd,
-    'SMA': weight_sma,
-    'BB': weight_bb,
-    'Stoch': weight_stoch,
-    'Volume': weight_volume,
-    'ADX': weight_adx
+weights = {
+    'RSI': w_rsi, 
+    'MACD': w_macd, 
+    'SMA': w_sma, 
+    'BB': w_bb, 
+    'Stoch': w_stoch,
+    'Volume': w_vol, 
+    'ADX': w_adx
 }
+
+# Monte Carlo & Backtest Settings
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎲 Simulation & Backtest")
+with st.sidebar.expander("Monte Carlo Settings"):
+    sim_count = st.select_slider("Simulation count", options=[500, 1000, 2500, 5000, 10000], value=2500)
+    max_days = st.slider("Max days for sim", 90, 730, 365, 30)
+
+with st.sidebar.expander("Backtest Settings"):
+    initial_capital = st.number_input("Initial Capital ($)", min_value=1000, max_value=1000000, value=10000, step=1000)
+    confidence_threshold = st.slider("Min confidence for trade (%)", 0, 50, 20, 5)
+    stop_loss_pct = st.slider("Stop Loss (%)", 1, 20, 5, 1) / 100
+    take_profit_pct = st.slider("Take Profit (%)", 5, 50, 15, 5) / 100
+
+# Performance Settings
+st.sidebar.markdown("---")
+st.sidebar.subheader("⚡ Performance")
+max_workers = st.sidebar.slider("Parallel workers", 1, 12, 5)
+limit_batch = st.sidebar.number_input("Batch limit (max tickers)", min_value=1, max_value=50, value=10)
+
+# Refresh Button
+st.sidebar.markdown("---")
+refresh_button = st.sidebar.button("🔄 Refresh Data", type="primary")
+
+# -------------------- Fear & Greed & SPY --------------------
+
+fg_score, fg_rating, fg_color = get_fear_greed_index()
+spy_hist = get_spy_data(period=lookback, interval=interval)
+
+# -------------------- Session State --------------------
+if "data_cache" not in st.session_state:
+    st.session_state["data_cache"] = {}
+if "batch_errors" not in st.session_state:
+    st.session_state["batch_errors"] = {}
+
+# -------------------- Batch Fetching --------------------
+
+def fetch_and_process(ticker):
+    """Fetch and process single ticker for batch summary"""
+    hist, info = get_data_optimized(ticker, period=lookback, interval=interval)
+    if hist.empty:
+        err_msg = info.get("_error", "Unknown error")
+        return None, f"{ticker}: {err_msg}"
+    
+    df = calc_indicators(hist, rsi_period=rsi_period, sma_short=sma_short, sma_long=sma_long)
+    rec, signals, conf, scores = rule_based_signal_v2(df, rsi_oversold=rsi_oversold,
+                                                       rsi_overbought=rsi_overbought,
+                                                       weights=weights)
+    
+    # Risk metrics
+    risk = calculate_risk_metrics(df)
+    
+    # P/E
+    pe = info.get("forwardPE") or info.get("trailingPE") or "N/A"
+    
+    # SPY correlation
+    corr = 0.0
+    try:
+        if not spy_hist.empty:
+            min_len = min(len(spy_hist), len(df))
+            corr = df['Close'].iloc[-min_len:].corr(spy_hist['Close'].iloc[-min_len:])
+            corr = 0.0 if np.isnan(corr) else corr
+    except:
+        corr = 0.0
+    
+    price_str = f"${df['Close'].iloc[-1]:.2f}"
+    sharpe = risk['sharpe'] if risk else 0
+    
+    return {
+        "Ticker": ticker,
+        "Price": price_str,
+        "Rec": rec,
+        "Conf (%)": f"{conf:.1f}",
+        "Sharpe": f"{sharpe:.2f}",
+        "SPY Corr": f"{corr:.2f}",
+        "P/E": f"{pe:.1f}" if isinstance(pe, (int, float)) else pe
+    }, None
+
+st.subheader("📊 Watchlist Summary")
+
+if refresh_button or len(st.session_state["data_cache"]) == 0:
+    with st.spinner("Fetching batch data..."):
+        batch_results = []
+        errors = []
+        to_fetch = tickers[:int(limit_batch)]
+        
+        with ThreadPoolExecutor(max_workers=int(max_workers)) as executor:
+            future_to_ticker = {executor.submit(fetch_and_process, t): t for t in to_fetch}
+            for fut in as_completed(future_to_ticker):
+                res, err = fut.result()
+                if err:
+                    errors.append(err)
+                elif res:
+                    batch_results.append(res)
+        
+        st.session_state["batch_errors"] = {e.split(":")[0]: e for e in errors}
+        
+        if batch_results:
+            df_batch = pd.DataFrame(batch_results).sort_values(by="Conf (%)", ascending=False)
+            st.dataframe(df_batch.reset_index(drop=True), use_container_width=True)
+        else:
+            st.info("No batch results available.")
+        
+        if errors:
+            with st.expander("⚠️ Errors"):
+                for e in errors:
+                    st.write(f"- {e}")
+
+# -------------------- Market Overview --------------------
+
+st.markdown("---")
+col1, col2, col3 = st.columns([2, 1, 2])
+
+with col1:
+    st.subheader("🌍 Market Sentiment")
+    c1, c2 = st.columns(2)
+    with c1:
+        if fg_score is not None:
+            st.metric("Fear & Greed Score", fg_score)
+            st.progress(fg_score / 100)
+        else:
+            st.metric("Fear & Greed Score", "N/A")
+    with c2:
+        st.write(f"**{fg_rating}**")
+        st.write(fg_color)
+
+with col2:
+    st.subheader("📈 SPY")
+    if not spy_hist.empty:
+        spy_change = (spy_hist['Close'].iloc[-1] - spy_hist['Close'].iloc[-2]) / spy_hist['Close'].iloc[-2] * 100
+        st.metric("SPY", f"${spy_hist['Close'].iloc[-1]:.2f}", f"{spy_change:+.2f}%")
+
+with col3:
+    st.subheader("📍 Select Stock")
+    selected = st.selectbox("Choose ticker to analyze", options=tickers if tickers else ["AAPL"], label_visibility="collapsed")
+
+# -------------------- Single Stock Analysis --------------------
+
+st.markdown("---")
+st.header(f"🔍 Deep Dive: {selected}")
+
+# Fetch selected ticker
+cache_key = f"{selected}_{lookback}_{interval}"
+if cache_key in st.session_state["data_cache"]:
+    hist, info = st.session_state["data_cache"][cache_key]
+else:
+    with st.spinner(f"Loading {selected}..."):
+        hist, info = get_data_optimized(selected, period=lookback, interval=interval)
+        st.session_state["data_cache"][cache_key] = (hist, info)
+
+if hist.empty:
+    st.error(f"❌ No data for {selected}. Reason: {info.get('_error', 'Unknown')}")
+    st.stop()
+
+# Calculate indicators
+df = calc_indicators(hist, rsi_period=rsi_period, sma_short=sma_short, sma_long=sma_long)
+
+# Validate indicators
+is_valid, validation = validate_indicators(df)
+if not is_valid:
+    st.warning(f"⚠️ Data quality issue: {validation}")
+
+latest = df.iloc[-1]
+
+# Top metrics
+st.subheader("💰 Key Metrics")
+m1, m2, m3, m4, m5 = st.columns(5)
+
+price_str = f"${latest['Close']:.2f}"
+vol_str = f"{latest['Volume'] / 1_000_000:.2f}M"
+market_cap = info.get("marketCap")
+mc_str = f"${market_cap/1_000_000_000:.2f}B" if market_cap else "N/A"
+pe_val = info.get("forwardPE") or info.get("trailingPE") or "N/A"
+pe_str = f"{pe_val:.1f}x" if isinstance(pe_val, (int, float)) else pe_val
+
+m1.metric("Price", price_str)
+m2.metric("Volume", vol_str)
+m3.metric("Market Cap", mc_str)
+m4.metric("Fwd P/E", pe_str)
+
+# SPY Correlation
+corr = 0.0
+if not spy_hist.empty:
+    try:
+        min_len = min(len(spy_hist), len(df))
+        corr = df['Close'].iloc[-min_len:].corr(spy_hist['Close'].iloc[-min_len:])
+        corr = 0.0 if np.isnan(corr) else corr
+    except:
+        corr = 0.0
+m5.metric("SPY Correlation", f"{corr:.2f}")
+
+# Risk Metrics
+st.subheader("⚠️ Risk Analysis")
+risk_metrics = calculate_risk_metrics(df)
+
+if risk_metrics:
+    r1, r2, r3, r4, r5 = st.columns(5)
+    r1.metric("Annual Return", f"{risk_metrics['annual_return']*100:.2f}%")
+    r2.metric("Volatility", f"{risk_metrics['volatility']*100:.2f}%")
+    r3.metric("Sharpe Ratio", f"{risk_metrics['sharpe']:.2f}")
+    r4.metric("Sortino Ratio", f"{risk_metrics['sortino']:.2f}")
+    r5.metric("Max Drawdown", f"{risk_metrics['max_drawdown']*100:.2f}%")
+
+# -------------------- Charts --------------------
+
+st.markdown("---")
+st.subheader("📉 Price Chart with Technical Indicators")
+
+# Create subplots
+fig = make_subplots(
+    rows=3, cols=1,
+    shared_xaxes=True,
+    vertical_spacing=0.05,
+    row_heights=[0.5, 0.25, 0.25],
+    subplot_titles=('Price & Indicators', 'RSI', 'MACD')
+)
+
+# Candlestick
+fig.add_trace(
+    go.Candlestick(
+        x=df.index,
+        open=df['Open'],
+        high=df['High'],
+        low=df['Low'],
+        close=df['Close'],
+        name='Price'
+    ),
+    row=1, col=1
+)
+
+# SMAs
+if 'SMA_short' in df:
+    fig.add_trace(go.Scatter(x=df.index, y=df['SMA_short'], mode='lines', 
+                             name=f'SMA {sma_short}', line=dict(width=1, color='orange')), row=1, col=1)
+if 'SMA_long' in df:
+    fig.add_trace(go.Scatter(x=df.index, y=df['SMA_long'], mode='lines',
+                             name=f'SMA {sma_long}', line=dict(width=1, color='blue')), row=1, col=1)
+
+# Bollinger Bands
+if 'BB_upper' in df and 'BB_lower' in df:
+    fig.add_trace(go.Scatter(x=df.index, y=df['BB_upper'], mode='lines',
+                             name='BB Upper', line=dict(dash='dot', width=1, color='gray')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['BB_lower'], mode='lines',
+                             name='BB Lower', line=dict(dash='dot', width=1, color='gray')), row=1, col=1)
+
+# RSI
+fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], mode='lines', name='RSI', line=dict(color='purple')), row=2, col=1)
+fig.add_hline(y=rsi_overbought, line_dash="dash", line_color="red", row=2, col=1)
+fig.add_hline(y=rsi_oversold, line_dash="dash", line_color="green", row=2, col=1)
+fig.add_hline(y=50, line_dash="dot", line_color="gray", row=2, col=1)
+
+# MACD
+fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], mode='lines', name='MACD', line=dict(color='blue')), row=3, col=1)
+fig.add_trace(go.Scatter(x=df.index, y=df['MACD_signal'], mode='lines', name='Signal', line=dict(color='red')), row=3, col=1)
+fig.add_trace(go.Bar(x=df.index, y=df['MACD_hist'], name='Histogram'), row=3, col=1)
+
+fig.update_layout(height=800, xaxis_rangeslider_visible=False, showlegend=True)
+fig.update_xaxes(title_text="Date", row=3, col=1)
+fig.update_yaxes(title_text="Price ($)", row=1, col=1)
+fig.update_yaxes(title_text="RSI", row=2, col=1)
+fig.update_yaxes(title_text="MACD", row=3, col=1)
+
+st.plotly_chart(fig, use_container_width=True)
+
+# -------------------- Signals & Recommendation --------------------
+
+st.markdown("---")
+st.subheader("🎯 Trading Signals & Recommendation")
+
+recommendation, signals, confidence, raw_scores = rule_based_signal_v2(
+    df, 
+    rsi_oversold=rsi_oversold,
+    rsi_overbought=rsi_overbought,
+    weights=weights
+)
+
+col1, col2 = st.columns([1, 2])
+
+with col1:
+    # Recommendation box
+    color = "green" if "BUY" in recommendation else "red" if "SELL" in recommendation else "orange"
+    st.markdown(f"<h2 style='color:{color}; text-align:center;'>{recommendation}</h2>", unsafe_allow_html=True)
+    st.markdown(f"<h4 style='text-align:center;'>Confidence: {confidence:.1f}%</h4>", unsafe_allow_html=True)
+    
+    # Score breakdown
+    st.metric("Buy Score", f"{raw_scores['buy']:.2f}")
+    st.metric("Sell Score", f"{raw_scores['sell']:.2f}")
+    st.metric("Net Score", f"{raw_scores['net']:.2f}")
+
+with col2:
+    # Signal details
+    st.write("**Signal Breakdown:**")
+    
+    for signal_text, signal_type, weight, extra in signals:
+        if signal_type == "BUY":
+            emoji = "🟢"
+        elif signal_type == "SELL":
+            emoji = "🔴"
+        elif signal_type == "CONFIRM":
+            emoji = "✅"
+        elif signal_type == "AMPLIFY":
+            emoji = "📈"
+        elif signal_type == "DAMPEN":
+            emoji = "📉"
+        elif signal_type == "CAUTION":
+            emoji = "⚠️"
+        elif signal_type == "WATCH":
+            emoji = "👀"
+        else:
+            emoji = "⚪"
+        
+        display_text = f"{emoji} {signal_text}"
+        if extra:
+            display_text += f" ({extra})"
+        if weight > 0:
+            display_text += f" [w={weight:.2f}]"
+        
+        st.write(display_text)
+
+# -------------------- Backtest Results --------------------
+
+st.markdown("---")
+st.subheader("📊 Strategy Backtest Performance")
+
+with st.spinner("Running backtest..."):
+    backtest_results = backtest_strategy(
+        df, 
+        weights=weights,
+        initial_capital=initial_capital,
+        confidence_threshold=confidence_threshold,
+        stop_loss_pct=stop_loss_pct,
+        take_profit_pct=take_profit_pct
+    )
+
+b1, b2, b3, b4, b5 = st.columns(5)
+
+b1.metric("Final Capital", f"${backtest_results['final_capital']:.2f}")
+b2.metric("Strategy Return", f"{backtest_results['total_return']*100:.2f}%")
+b3.metric("Buy & Hold Return", f"{backtest_results['buy_hold_return']*100:.2f}%")
+b4.metric("Alpha", f"{backtest_results['alpha']*100:.2f}%", 
+          delta=f"{backtest_results['alpha']*100:.2f}%")
+b5.metric("Number of Trades", backtest_results['num_trades'])
+
+b6, b7, b8 = st.columns(3)
+b6.metric("Win Rate", f"{backtest_results['win_rate']*100:.1f}%")
+b7.metric("Avg Win", f"{backtest_results['avg_win']*100:.2f}%")
+b8.metric("Avg Loss", f"{backtest_results['avg_loss']*100:.2f}%")
+
+# Equity Curve
+if backtest_results['equity_curve']:
+    st.subheader("📈 Equity Curve")
+    equity_df = pd.DataFrame(backtest_results['equity_curve'])
+    
+    fig_equity = go.Figure()
+    fig_equity.add_trace(go.Scatter(
+        x=equity_df['date'],
+        y=equity_df['value'],
+        mode='lines',
+        name='Portfolio Value',
+        line=dict(color='green', width=2)
+    ))
+    
+    # Add buy/sell markers
+    if backtest_results['buy_signals']:
+        buy_dates = [df.index[i] for i in backtest_results['buy_signals']]
+        buy_prices = [df['Close'].iloc[i] for i in backtest_results['buy_signals']]
+        fig_equity.add_trace(go.Scatter(
+            x=buy_dates,
+            y=[equity_df[equity_df['date'] == d]['value'].iloc[0] if len(equity_df[equity_df['date'] == d]) > 0 else 0 for d in buy_dates],
+            mode='markers',
+            name='Buy Signal',
+            marker=dict(color='green', size=10, symbol='triangle-up')
+        ))
+    
+    if backtest_results['sell_signals']:
+        sell_dates = [df.index[i] for i in backtest_results['sell_signals']]
+        fig_equity.add_trace(go.Scatter(
+            x=sell_dates,
+            y=[equity_df[equity_df['date'] == d]['value'].iloc[0] if len(equity_df[equity_df['date'] == d]) > 0 else 0 for d in sell_dates],
+            mode='markers',
+            name='Sell Signal',
+            marker=dict(color='red', size=10, symbol='triangle-down')
+        ))
+    
+    fig_equity.update_layout(
+        height=400,
+        xaxis_title="Date",
+        yaxis_title="Portfolio Value ($)",
+        hovermode='x unified'
+    )
+    st.plotly_chart(fig_equity, use_container_width=True)
+
+# Trade History
+with st.expander("📋 View Trade History"):
+    if backtest_results['positions']:
+        trades_df = pd.DataFrame(backtest_results['positions'], 
+                                columns=['Action', 'Date', 'Price', 'Value/Shares', 'Return/Conf'])
+        st.dataframe(trades_df, use_container_width=True)
+
+# -------------------- Monte Carlo Projections --------------------
+
+st.markdown("---")
+st.subheader("🎲 Monte Carlo Price Target Projections")
+
+targets = [0.05, 0.10, 0.20, 0.30, 0.50, 1.00]
+sim_results = []
+current_price = float(latest['Close'])
+
+with st.spinner("Running Monte Carlo simulations..."):
+    for t in targets:
+        res = estimate_days_to_target_advanced(
+            df, 
+            current_price, 
+            target_return=t,
+            sims=sim_count,
+            max_days=max_days
+        )
+        sim_results.append({
+            "Target (%)": int(t*100),
+            "Target Price": f"${current_price * (1+t):.2f}",
+            "Probability (%)": f"{res['probability']*100:.1f}",
+            "Median Days": res['median_days'],
+            "90th Pctl Days": res['90pct_days'],
+            "10th Pctl Days": res['10pct_days']
+        })
+
+mc_df = pd.DataFrame(sim_results)
+st.dataframe(mc_df, use_container_width=True)
+
+st.info(f"💡 Based on {sim_count:,} simulations with {max_days} day horizon using Student's t-distribution")
+
+# -------------------- Footer --------------------
+
+st.markdown("---")
+st.subheader("📝 Notes & Disclaimers")
+
+st.write("""
+### Improvements in v2.0:
+- ✅ **Fixed signal weighting logic** - Proper separation of directional signals and modifiers
+- ✅ **Enhanced Monte Carlo** - Student's t-distribution for fat tails, volatility clustering
+- ✅ **Comprehensive risk metrics** - Sharpe, Sortino, Max DD, Calmar, VaR
+- ✅ **Full backtesting** - Transaction costs, stop-loss, take-profit, win rate analysis
+- ✅ **Better data validation** - Indicator quality checks
+- ✅ **Optimized performance** - Selective info fetching, parallel batch processing
+
+### Limitations & Disclaimers:
+- ⚠️ **NOT FINANCIAL ADVICE** - This tool is for educational purposes only
+- ⚠️ Past performance does not guarantee future results
+- ⚠️ Backtest results may not reflect actual trading due to slippage, market impact
+- ⚠️ Always do your own research and consult a financial advisor
+- ⚠️ Consider paper trading before using real capital
+
+### Recommended Next Steps:
+1. Test different weight configurations to optimize for your risk tolerance
+2. Paper trade the strategy for at least 3 months before deploying real capital
+3. Consider adding fundamental analysis (earnings, revenue growth, debt ratios)
+4. Implement position sizing and portfolio-level risk management
+5. Add real-time alerts for signal generation
+6. Consider machine learning models trained on your optimized weights
+""")
+
+st.markdown("---")
+st.caption("Enhanced Stock Dashboard v2.0 | Built with Streamlit | Data: Yahoo Finance")
