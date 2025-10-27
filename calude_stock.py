@@ -619,6 +619,57 @@ st.sidebar.subheader("⚖️ Signal Weights")
 with st.sidebar.expander("📈 Backtesting Settings"):
     initial_capital = st.number_input("Initial Capital ($)", value=10000, step=1000)
     confidence_threshold = st.slider("Confidence Threshold (%)", 0, 100, 20)
+# -------------------- Main Dashboard --------------------
+
+if st.button("🚀 Run Analysis"):
+    st.subheader("Market Overview")
+
+    progress = st.progress(0)
+    results = []
+
+    for i, ticker in enumerate(tickers):
+        progress.progress((i + 1) / len(tickers))
+        hist, info = get_data_optimized(ticker, period=lookback, interval=interval)
+
+        if hist.empty:
+            st.warning(f"⚠️ {ticker}: Data not available ({info.get('_error', 'unknown error')})")
+            continue
+
+        df = calc_indicators(hist)
+        valid, valinfo = validate_indicators(df)
+        if not valid:
+            st.warning(f"⚠️ {ticker}: {valinfo}")
+            continue
+
+        rec, signals, conf, scores = rule_based_signal_v2(df)
+        risk = calculate_risk_metrics(df)
+
+        results.append({
+            "Ticker": ticker,
+            "Recommendation": rec,
+            "Confidence": f"{conf:.1f}%",
+            "Return (1Y)": f"{risk['annual_return']*100:.1f}%" if risk else "N/A",
+            "Volatility": f"{risk['volatility']*100:.1f}%" if risk else "N/A",
+            "Sharpe": f"{risk['sharpe']:.2f}" if risk else "N/A"
+        })
+
+        # Plot
+        fig = go.Figure()
+        fig.add_trace(go.Candlestick(
+            x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+            name=ticker
+        ))
+        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_short'], line=dict(color='blue', width=1), name='SMA Short'))
+        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_long'], line=dict(color='orange', width=1), name='SMA Long'))
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    if results:
+        st.subheader("📊 Summary")
+        st.dataframe(pd.DataFrame(results))
+    else:
+        st.info("No valid data to display. Please adjust your tickers or lookback period.")
+
     stop_loss_pct = st.slider("Stop Loss (%)", 1, 20, 5) / 100
     take_profit_pct = st.slider("Take Profit (%)", 5, 50, 15) / 100
 
