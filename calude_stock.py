@@ -31,7 +31,7 @@ try:
 except Exception:
     SENTIMENT_AVAILABLE = False
 
-st.set_page_config(layout="wide", page_title="Enhanced Stock Dashboard v2.0")
+st.set_page_config(layout="wide", page_title="Enhanced Stock Dashboard v2.0 (by Sadiq)")
 
 # -------------------- Data Fetching & Validation --------------------
 
