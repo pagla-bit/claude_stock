@@ -578,7 +578,7 @@ def backtest_strategy(df: pd.DataFrame, weights: dict,
 
 # -------------------- UI Layout --------------------
 
-st.title("📈 Enhanced Stock Dashboard v2.0")
+st.title("📈 Enhanced Stock Dashboard v2.0 (by Sadiq)")
 st.caption("Advanced technical analysis with risk metrics and strategy backtesting")
 
 # Sidebar Configuration
@@ -1096,4 +1096,4 @@ st.write("""
 """)
 
 st.markdown("---")
-st.caption("Enhanced Stock Dashboard v2.0 | Built with Streamlit | Data: Yahoo Finance")
+st.caption("Enhanced Stock Dashboard v2.0 (by Sadiq) | Built with Streamlit | Data: Yahoo Finance")
