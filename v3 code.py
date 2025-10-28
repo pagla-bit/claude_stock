@@ -365,16 +365,24 @@ def train_lstm(X, y, seq_length=60):
     """Train LSTM model"""
     # Normalize features
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X.reshape(-1, X.shape[-1])).reshape(X.shape)
+    X_scaled = scaler.fit_transform(X)
     
-    # Create sequences
-    X_seq, y_seq = create_sequences(X_scaled, seq_length)
+    # Create sequences - need to align y properly
+    X_seq_list = []
+    y_seq_list = []
+    
+    for i in range(len(X_scaled) - seq_length):
+        X_seq_list.append(X_scaled[i:i+seq_length])
+        y_seq_list.append(y[i+seq_length])  # Target is the label AFTER the sequence
+    
+    X_seq = np.array(X_seq_list)
+    y_seq = np.array(y_seq_list)
     
     if len(X_seq) < 10:
         return None, "Insufficient data", "N/A", 0, 0.5
     
-    # Encode labels
-    y_seq_encoded = y_seq[seq_length:] + 1
+    # Encode labels: -1 -> 0, 0 -> 1, 1 -> 2
+    y_seq_encoded = y_seq + 1
     
     # Build model
     model = Sequential([
@@ -406,16 +414,24 @@ def train_rnn(X, y, seq_length=60):
     """Train Simple RNN model"""
     # Normalize features
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X.reshape(-1, X.shape[-1])).reshape(X.shape)
+    X_scaled = scaler.fit_transform(X)
     
-    # Create sequences
-    X_seq, y_seq = create_sequences(X_scaled, seq_length)
+    # Create sequences - need to align y properly
+    X_seq_list = []
+    y_seq_list = []
+    
+    for i in range(len(X_scaled) - seq_length):
+        X_seq_list.append(X_scaled[i:i+seq_length])
+        y_seq_list.append(y[i+seq_length])  # Target is the label AFTER the sequence
+    
+    X_seq = np.array(X_seq_list)
+    y_seq = np.array(y_seq_list)
     
     if len(X_seq) < 10:
         return None, "Insufficient data", "N/A", 0, 0.5
     
-    # Encode labels
-    y_seq_encoded = y_seq[seq_length:] + 1
+    # Encode labels: -1 -> 0, 0 -> 1, 1 -> 2
+    y_seq_encoded = y_seq + 1
     
     # Build model
     model = Sequential([
