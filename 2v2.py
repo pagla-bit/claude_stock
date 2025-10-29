@@ -8,7 +8,9 @@ Key improvements:
 - Machine Learning Models Integration (RF, XGBoost, ARIMA, GARCH, LSTM, RNN)
 - Ensemble recommendations from multiple algorithms
 """
-
+# Add these after your existing imports
+from bs4 import BeautifulSoup
+import re
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -128,6 +130,137 @@ def get_fear_greed_index():
     
     return None, "N/A", "N/A"
 
+# -------------------- Finviz Scraping Functions --------------------
+
+@st.cache_data(ttl=1800)  # Cache for 30 minutes
+def scrape_finviz_news(ticker: str, max_news: int = 10):
+    """
+    Scrape latest news from Finviz
+    Returns: List of dicts with {date, time, title, link, source}
+    """
+    try:
+        url = f"https://finviz.com/quote.ashx?t={ticker.upper()}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        news_table = soup.find('table', {'id': 'news-table'})
+        
+        if not news_table:
+            return []
+        
+        news_list = []
+        current_date = None
+        
+        for row in news_table.find_all('tr')[:max_news]:
+            td_timestamp = row.find('td', {'align': 'right', 'width': '130'})
+            td_content = row.find('td', {'align': 'left'})
+            
+            if not td_timestamp or not td_content:
+                continue
+            
+            # Parse timestamp
+            timestamp_text = td_timestamp.get_text().strip()
+            timestamp_parts = timestamp_text.split()
+            
+            if len(timestamp_parts) == 2:
+                current_date = timestamp_parts[0]
+                time_str = timestamp_parts[1]
+            else:
+                time_str = timestamp_parts[0]
+            
+            # Extract news info
+            link_tag = td_content.find('a')
+            if link_tag:
+                title = link_tag.get_text().strip()
+                link = link_tag.get('href', '')
+                
+                # Get source
+                source_span = td_content.find('span', {'class': 'news-link-right'})
+                source = source_span.get_text().strip() if source_span else 'Unknown'
+                
+                # Make link absolute
+                if link and not link.startswith('http'):
+                    link = 'https://finviz.com/' + link
+                
+                news_list.append({
+                    'Date': current_date,
+                    'Time': time_str,
+                    'Source': source,
+                    'Title': title,
+                    'Link': link
+                })
+        
+        return news_list
+    
+    except Exception as e:
+        st.warning(f"Could not fetch news for {ticker}: {str(e)[:100]}")
+        return []
+
+
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def scrape_finviz_analyst_ratings(ticker: str):
+    """
+    Scrape analyst ratings table from Finviz
+    Returns: DataFrame with columns [Date, Action, Analyst, Rating, Price Target]
+    """
+    try:
+        url = f"https://finviz.com/quote.ashx?t={ticker.upper()}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Find ratings table
+        ratings_table = soup.find('table', {'class': 'fullview-ratings-outer'})
+        
+        if not ratings_table:
+            return None
+        
+        ratings_list = []
+        
+        # Parse table rows (skip header)
+        for row in ratings_table.find_all('tr')[1:]:
+            cols = row.find_all('td')
+            
+            if len(cols) >= 4:
+                date = cols[0].get_text().strip()
+                action = cols[1].get_text().strip()
+                analyst = cols[2].get_text().strip()
+                rating = cols[3].get_text().strip()
+                
+                # Price target might be in 4th or 5th column
+                price_target = 'N/A'
+                if len(cols) > 4:
+                    pt_text = cols[4].get_text().strip()
+                    pt_match = re.search(r'\$?(\d+)', pt_text)
+                    if pt_match:
+                        price_target = f"${pt_match.group(1)}"
+                
+                ratings_list.append({
+                    'Date': date,
+                    'Action': action,
+                    'Analyst': analyst,
+                    'Rating': rating,
+                    'Price Target': price_target
+                })
+        
+        if ratings_list:
+            return pd.DataFrame(ratings_list)
+        else:
+            return None
+    
+    except Exception as e:
+        st.warning(f"Could not fetch analyst ratings for {ticker}: {str(e)[:100]}")
+        return None
 # -------------------- Indicator Calculations --------------------
 
 def calc_indicators(df: pd.DataFrame,
@@ -874,7 +1007,8 @@ def backtest_strategy(df: pd.DataFrame, weights: dict, initial_capital: float = 
 
 # -------------------- UI Layout --------------------
 
-st.title("📈 Enhanced Stock Dashboard v2.1 (by Sadiq)")
+st.title("📈 Enhanced Stock Dashboard v2.2 (by Sadiq)")
+st.caption("Advanced technical analysis with ML models, strategy backtesting, and real-time news intelligence")
 st.caption("Advanced technical analysis with ML models and strategy backtesting")
 
 # Sidebar Configuration
@@ -1060,7 +1194,101 @@ fig.add_trace(go.Bar(x=df.index, y=df['MACD_hist'], name='Histogram'), row=3, co
 
 fig.update_layout(height=800, xaxis_rangeslider_visible=False, showlegend=True)
 st.plotly_chart(fig, use_container_width=True)
+# -------------------- News & Analyst Ratings Section --------------------
 
+st.markdown("---")
+st.header(f"📰 News & Analyst Intelligence for {selected}")
+
+col_news, col_ratings = st.columns([3, 2])
+
+with col_news:
+    st.subheader("Latest News from Finviz")
+    
+    with st.spinner("Fetching latest news..."):
+        news_data = scrape_finviz_news(selected, max_news=10)
+    
+    if news_data:
+        st.caption(f"📊 Showing {len(news_data)} most recent news items")
+        
+        for idx, item in enumerate(news_data, 1):
+            with st.container():
+                col1, col2 = st.columns([1, 9])
+                
+                with col1:
+                    st.markdown(f"**{idx}.**")
+                    st.caption(item['Date'])
+                    st.caption(item['Time'])
+                
+                with col2:
+                    # Make title clickable
+                    st.markdown(f"**[{item['Title']}]({item['Link']})**")
+                    st.caption(f"📡 Source: {item['Source']}")
+                
+                if idx < len(news_data):
+                    st.divider()
+    else:
+        st.info("📭 No recent news available from Finviz at this time")
+        st.caption("This could be due to network issues or the ticker not being covered")
+
+with col_ratings:
+    st.subheader("Analyst Ratings")
+    
+    with st.spinner("Fetching analyst ratings..."):
+        ratings_df = scrape_finviz_analyst_ratings(selected)
+    
+    if ratings_df is not None and not ratings_df.empty:
+        # Display the full table
+        st.dataframe(
+            ratings_df,
+            use_container_width=True,
+            height=400,
+            hide_index=True
+        )
+        
+        # Summary statistics
+        st.markdown("**📊 Recent Consensus:**")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if 'Rating' in ratings_df.columns:
+                rating_counts = ratings_df['Rating'].value_counts()
+                st.write("**Ratings:**")
+                for rating, count in rating_counts.head(3).items():
+                    st.write(f"• {rating}: {count}x")
+        
+        with col2:
+            if 'Action' in ratings_df.columns:
+                action_counts = ratings_df['Action'].value_counts()
+                st.write("**Actions:**")
+                for action, count in action_counts.items():
+                    st.write(f"• {action}: {count}x")
+        
+        # Price target analysis
+        if 'Price Target' in ratings_df.columns:
+            price_targets = []
+            for pt in ratings_df['Price Target']:
+                if pt != 'N/A':
+                    try:
+                        value = float(pt.replace('$', '').replace(',', ''))
+                        price_targets.append(value)
+                    except:
+                        continue
+            
+            if price_targets:
+                avg_target = sum(price_targets) / len(price_targets)
+                current_price_val = float(latest['Close'])
+                upside = ((avg_target - current_price_val) / current_price_val) * 100
+                
+                st.metric(
+                    "Avg Price Target", 
+                    f"${avg_target:.2f}",
+                    f"{upside:+.1f}%",
+                    help=f"Based on {len(price_targets)} analyst(s)"
+                )
+    else:
+        st.info("📭 No analyst ratings available")
+        st.caption("Some stocks may not have analyst coverage or ratings may not be displayed on Finviz")
 # Rule-Based Recommendation
 st.markdown("---")
 st.subheader("🎯 Rule-Based Trading Signals")
@@ -1201,7 +1429,7 @@ st.markdown("---")
 st.subheader("📝 Notes & Disclaimers")
 
 st.write("""
-### Improvements in v2.1:
+### Improvements in v2.2:
 - ✅ **Machine Learning Integration** - Random Forest, XGBoost, ARIMA+GARCH, LSTM, RNN, Monte Carlo
 - ✅ **Ensemble Recommendations** - Simple majority voting across all models
 - ✅ **Comprehensive Metrics** - Accuracy, Precision, Recall, F1-Score, AUC for each model
@@ -1251,4 +1479,4 @@ st.write("""
 """)
 
 st.markdown("---")
-st.caption("Enhanced Stock Dashboard v2.1 (by Sadiq) | Built with Streamlit | Data: Yahoo Finance | ML: scikit-learn, XGBoost, TensorFlow, statsmodels")
+st.caption("Enhanced Stock Dashboard v2.2 (by Sadiq) | Built with Streamlit | Data: Yahoo Finance, Finviz | ML: scikit-learn, XGBoost, TensorFlow, statsmodels")
