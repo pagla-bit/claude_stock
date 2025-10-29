@@ -604,6 +604,54 @@ def train_arima_garch(df: pd.DataFrame):
     
     return None, params_str, metrics_str, prediction, confidence
 
+def train_lstm(X, y, seq_length=60):
+    """Train LSTM model"""
+    # Normalize features
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    # Create sequences - need to align y properly
+    X_seq_list = []
+    y_seq_list = []
+    
+    for i in range(len(X_scaled) - seq_length):
+        X_seq_list.append(X_scaled[i:i+seq_length])
+        y_seq_list.append(y[i+seq_length])  # Target is the label AFTER the sequence
+    
+    X_seq = np.array(X_seq_list)
+    y_seq = np.array(y_seq_list)
+    
+    if len(X_seq) < 10:
+        return None, "Insufficient data", "N/A", 0, 0.5
+    
+    # Encode labels: -1 -> 0, 0 -> 1, 1 -> 2
+    y_seq_encoded = y_seq + 1
+    
+    # Build model
+    model = Sequential([
+        LSTM(50, return_sequences=True, input_shape=(seq_length, X.shape[1])),
+        Dropout(0.2),
+        LSTM(50, return_sequences=False),
+        Dropout(0.2),
+        Dense(3, activation='softmax')
+    ])
+    
+    model.compile(optimizer=Adam(learning_rate=0.001), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+    
+    # Train
+    model.fit(X_seq, y_seq_encoded, epochs=20, batch_size=32, verbose=0)
+    
+    # Predict
+    y_pred_proba = model.predict(X_seq, verbose=0)
+    y_pred_encoded = np.argmax(y_pred_proba, axis=1)
+    y_pred = y_pred_encoded - 1
+    
+    accuracy = accuracy_score(y_seq_encoded, y_pred_encoded)
+    
+    params_str = "layers=[LSTM(50), LSTM(50)], seq_len=60, epochs=20"
+    metrics_str = f"Acc:{accuracy:.2%}"
+    
+    return model, params_str, metrics_str, y_pred[-1], y_pred_proba[-1]
 def train_rnn(X, y, seq_length=60):
     """Train Simple RNN model"""
     # Normalize features
