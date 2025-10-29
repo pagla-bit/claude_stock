@@ -354,6 +354,140 @@ def analyze_news_sentiment(news_data: list):
             item['sentiment_color'] = 'gray'
         return news_data
 
+############# BERT addition #################
+# Global variables for model caching
+_finbert_model = None
+_finbert_tokenizer = None
+
+def load_finbert_model():
+    """Load FinBERT model once and cache it"""
+    global _finbert_model, _finbert_tokenizer
+    
+    if _finbert_model is None:
+        try:
+            from transformers import AutoTokenizer, AutoModelForSequenceClassification
+            import torch
+            
+            model_name = "ProsusAI/finbert"
+            _finbert_tokenizer = AutoTokenizer.from_pretrained(model_name)
+            _finbert_model = AutoModelForSequenceClassification.from_pretrained(model_name)
+            _finbert_model.eval()
+            
+            return _finbert_tokenizer, _finbert_model
+        except Exception as e:
+            st.warning(f"FinBERT not available: {str(e)[:100]}")
+            return None, None
+    
+    return _finbert_tokenizer, _finbert_model
+
+
+def get_finbert_sentiment(text: str):
+    """Get FinBERT sentiment for text"""
+    try:
+        import torch
+        
+        tokenizer, model = load_finbert_model()
+        if tokenizer is None or model is None:
+            return "N/A", 0.0
+        
+        inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512, padding=True)
+        
+        with torch.no_grad():
+            outputs = model(**inputs)
+            predictions = torch.nn.functional.softmax(outputs.logits, dim=-1)
+        
+        # FinBERT: [negative, neutral, positive]
+        negative = predictions[0][0].item()
+        neutral = predictions[0][1].item()
+        positive = predictions[0][2].item()
+        
+        # Calculate compound score [-1, 1]
+        compound = positive - negative
+        
+        # Determine label
+        if positive > negative and positive > neutral:
+            label = "Positive"
+        elif negative > positive and negative > neutral:
+            label = "Negative"
+        else:
+            label = "Neutral"
+        
+        return label, compound
+        
+    except Exception:
+        return "N/A", 0.0
+
+
+def analyze_news_sentiment_with_bert(news_data: list, use_bert: bool = True):
+    """
+    Enhanced sentiment analysis with VADER + optional FinBERT
+    
+    Args:
+        news_data: List of news items
+        use_bert: Whether to use FinBERT (slower but more accurate)
+    """
+    # Check VADER availability
+    vader_available = False
+    try:
+        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+        vader_analyzer = SentimentIntensityAnalyzer()
+        vader_available = True
+    except:
+        pass
+    
+    # Check FinBERT availability
+    bert_available = use_bert and (load_finbert_model()[0] is not None)
+    
+    for item in news_data:
+        title = item['Title']
+        
+        # Get VADER sentiment
+        vader_score = 0.0
+        if vader_available:
+            vader_scores = vader_analyzer.polarity_scores(title)
+            vader_score = vader_scores['compound']
+        
+        # Get FinBERT sentiment
+        bert_score = 0.0
+        bert_label = "N/A"
+        if bert_available:
+            bert_label, bert_score = get_finbert_sentiment(title)
+        
+        # Combined score (weighted: 40% VADER, 60% FinBERT)
+        if vader_available and bert_available:
+            combined_score = 0.4 * vader_score + 0.6 * bert_score
+        elif vader_available:
+            combined_score = vader_score
+        elif bert_available:
+            combined_score = bert_score
+        else:
+            combined_score = 0.0
+        
+        # Determine final label and emoji
+        if combined_score >= 0.05:
+            final_label = 'Positive'
+            final_emoji = '🟢'
+            final_color = 'green'
+        elif combined_score <= -0.05:
+            final_label = 'Negative'
+            final_emoji = '🔴'
+            final_color = 'red'
+        else:
+            final_label = 'Neutral'
+            final_emoji = '🟡'
+            final_color = 'orange'
+        
+        # Add sentiment data
+        item['sentiment_label'] = final_label
+        item['sentiment_score'] = combined_score
+        item['sentiment_emoji'] = final_emoji
+        item['sentiment_color'] = final_color
+        item['vader_score'] = vader_score
+        item['bert_score'] = bert_score
+        item['bert_label'] = bert_label
+        item['bert_available'] = bert_available
+    
+    return news_data
 
 # -------------------- Indicator Calculations --------------------
 
@@ -1221,6 +1355,11 @@ lookback = st.sidebar.selectbox("Lookback Period", ["6mo", "1y", "2y", "5y"], in
 interval = st.sidebar.selectbox("Data Interval", ["1d", "1wk"], index=0)
 
 st.sidebar.markdown("---")
+st.sidebar.subheader("🤖 Sentiment Analysis")
+use_finbert = st.sidebar.checkbox("Use FinBERT (slower, more accurate)", value=False, 
+                                   help="FinBERT is 60% more accurate but takes ~10 seconds")
+
+st.sidebar.markdown("---")
 st.sidebar.subheader("📊 Indicator Parameters")
 with st.sidebar.expander("RSI Settings"):
     rsi_period = st.slider("RSI Period", 10, 30, 14)
@@ -1426,7 +1565,11 @@ with st.spinner(f"Fetching latest news from {news_source}..."):
 
 if news_data:
     # Analyze sentiment
-    news_data = analyze_news_sentiment(news_data)
+    if use_finbert:
+        with st.spinner("Analyzing with FinBERT... (this may take 10-15 seconds)"):
+            news_data = analyze_news_sentiment_with_bert(news_data, use_bert=True)
+    else:
+        news_data = analyze_news_sentiment_with_bert(news_data, use_bert=False)
     
     st.caption(f"📊 Showing {len(news_data)} most recent news items from {news_source}")
     
@@ -1472,7 +1615,18 @@ if news_data:
         html_table += f'<tr style="border-bottom: 1px solid #ddd;">'
         html_table += f'<td style="padding: 8px; vertical-align: top; white-space: nowrap;">{row["Timestamp"]}</td>'
         html_table += f'<td style="padding: 8px;"><a href="{row["Link"]}" target="_blank" style="color: #0066cc; text-decoration: none;">{row["Headline"]}</a><br><small style="color: #666;">📡 {row["Source"]}</small></td>'
-        html_table += f'<td style="padding: 8px; text-align: center; white-space: nowrap;">{row["Sentiment"]}</td>'
+        # Build sentiment display
+        sentiment_emoji = row.get("sentiment_emoji", "⚪")
+        sentiment_label = row.get("sentiment_label", "N/A")
+        sentiment_score = row.get("sentiment_score", 0.0)
+        sentiment_display = f'{sentiment_emoji} <strong>{sentiment_label}</strong> ({sentiment_score:.2f})'
+    
+        if row.get('bert_available', False):
+            vader_score = row.get('vader_score', 0.0)
+            bert_score = row.get('bert_score', 0.0)
+            sentiment_display += f'<br><small style="color: #666;">VADER: {vader_score:.2f} | FinBERT: {bert_score:.2f}</small>'
+    
+        html_table += f'<td style="padding: 8px; text-align: center; white-space: nowrap;">{sentiment_display}</td>'
         html_table += '</tr>'
     
     html_table += '</table>'
@@ -1481,23 +1635,37 @@ if news_data:
     st.markdown(html_table, unsafe_allow_html=True)
     
     # Overall sentiment summary
-    if SENTIMENT_AVAILABLE:
+    if news_data and len(news_data) > 0:
         st.markdown("---")
         st.markdown("**📊 Overall Sentiment Summary:**")
-        
+    
         sentiment_scores = [item.get('sentiment_score', 0) for item in news_data]
-        avg_sentiment = sum(sentiment_scores) / len(sentiment_scores)
-        
+        avg_sentiment = sum(sentiment_scores) / len(sentiment_scores) if sentiment_scores else 0
+    
         col_s1, col_s2, col_s3, col_s4 = st.columns(4)
-        
+    
         positive_count = sum(1 for s in sentiment_scores if s >= 0.05)
         neutral_count = sum(1 for s in sentiment_scores if -0.05 < s < 0.05)
         negative_count = sum(1 for s in sentiment_scores if s <= -0.05)
-        
+    
         col_s1.metric("🟢 Positive", f"{positive_count}")
         col_s2.metric("🟡 Neutral", f"{neutral_count}")
         col_s3.metric("🔴 Negative", f"{negative_count}")
         col_s4.metric("Average Score", f"{avg_sentiment:.2f}")
+    
+        # Show method used
+        if news_data[0].get('bert_available', False):
+            st.caption("📊 Using combined VADER + FinBERT sentiment (40% VADER, 60% FinBERT)")
+        else:
+            st.caption("📊 Using VADER sentiment analysis")
+    
+        # Overall indicator
+        if avg_sentiment >= 0.05:
+            st.success(f"📈 Overall Positive News Sentiment on {news_source}")
+        elif avg_sentiment <= -0.05:
+            st.error(f"📉 Overall Negative News Sentiment on {news_source}")
+        else:
+            st.info(f"➡️ Overall Neutral News Sentiment on {news_source}")
         
         # Overall sentiment indicator
         if avg_sentiment >= 0.05:
