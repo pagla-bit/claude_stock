@@ -10,7 +10,7 @@ xgboost>=2.0.0
 statsmodels>=0.14.0
 arch>=6.2.0
 tensorflow>=2.15.0
-beautifulsoup4==4.12.2
-lxml==4.9.3
-vaderSentiment
-nltk
+beautifulsoup4>=4.12.2
+lxml>=4.9.3
+vaderSentiment>=3.3.2
+nltk>=3.8.1
