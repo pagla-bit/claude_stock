@@ -1,5 +1,5 @@
 """
-Enhanced Streamlit Stock Dashboard v2.2
+Enhanced Streamlit Stock Dashboard v2.2 - FINAL VERSION
 Key improvements:
 - Fixed signal weighting logic with proper modifiers
 - Advanced Monte Carlo with fat-tailed distributions
@@ -7,8 +7,9 @@ Key improvements:
 - Strategy backtesting with performance comparison
 - Machine Learning Models Integration (RF, XGBoost, ARIMA, GARCH, LSTM, RNN)
 - Ensemble recommendations from multiple algorithms
+- Multi-source news (Finviz, Yahoo Finance, Google News)
 - News sentiment analysis with table format
-- Analyst ratings from Finviz
+- ANALYST RATINGS SECTION REMOVED
 """
 # Imports
 from bs4 import BeautifulSoup
@@ -38,7 +39,7 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout, SimpleRNN
 from tensorflow.keras.optimizers import Adam
 
-# Optional sentiment dependencies
+# Sentiment analysis dependencies
 try:
     from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
     import nltk
@@ -46,6 +47,13 @@ try:
     SENTIMENT_AVAILABLE = True
 except Exception:
     SENTIMENT_AVAILABLE = False
+
+# Google News RSS parsing
+try:
+    import feedparser
+    FEEDPARSER_AVAILABLE = True
+except:
+    FEEDPARSER_AVAILABLE = False
 
 st.set_page_config(layout="wide", page_title="Enhanced Stock Dashboard v2.2 (by Sadiq)")
 
@@ -132,7 +140,7 @@ def get_fear_greed_index():
     
     return None, "N/A", "N/A"
 
-# -------------------- Finviz Scraping Functions --------------------
+# -------------------- Multi-Source News Scraping Functions --------------------
 
 @st.cache_data(ttl=1800)  # Cache for 30 minutes
 def scrape_finviz_news(ticker: str, max_news: int = 10):
@@ -183,7 +191,7 @@ def scrape_finviz_news(ticker: str, max_news: int = 10):
                 
                 # Get source
                 source_span = td_content.find('span', {'class': 'news-link-right'})
-                source = source_span.get_text().strip() if source_span else 'Unknown'
+                source = source_span.get_text().strip() if source_span else 'Finviz'
                 
                 # Make link absolute
                 if link and not link.startswith('http'):
@@ -200,69 +208,144 @@ def scrape_finviz_news(ticker: str, max_news: int = 10):
         return news_list
     
     except Exception as e:
-        st.warning(f"Could not fetch news for {ticker}: {str(e)[:100]}")
+        st.warning(f"Could not fetch Finviz news for {ticker}: {str(e)[:100]}")
         return []
 
 
-@st.cache_data(ttl=3600)  # Cache for 1 hour
-def scrape_finviz_analyst_ratings(ticker: str):
+@st.cache_data(ttl=1800)  # Cache for 30 minutes
+def scrape_yahoo_finance_news(ticker: str, max_news: int = 10):
     """
-    Scrape analyst ratings table from Finviz
-    Returns: DataFrame with columns [Date, Action, Analyst, Rating, Price Target]
+    Scrape latest news from Yahoo Finance using yfinance
+    Returns: List of dicts with {date, time, title, link, source}
     """
     try:
-        url = f"https://finviz.com/quote.ashx?t={ticker.upper()}"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
+        stock = yf.Ticker(ticker.upper())
+        news = stock.news
         
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
+        if not news:
+            return []
         
-        soup = BeautifulSoup(response.content, 'html.parser')
+        news_list = []
         
-        # Find ratings table
-        ratings_table = soup.find('table', {'class': 'fullview-ratings-outer'})
-        
-        if not ratings_table:
-            return None
-        
-        ratings_list = []
-        
-        # Parse table rows (skip header)
-        for row in ratings_table.find_all('tr')[1:]:
-            cols = row.find_all('td')
+        for item in news[:max_news]:
+            # Parse timestamp
+            timestamp = item.get('providerPublishTime', 0)
+            if timestamp:
+                dt = datetime.fromtimestamp(timestamp)
+                date_str = dt.strftime('%b-%d-%y')
+                time_str = dt.strftime('%I:%M%p')
+            else:
+                date_str = 'Today'
+                time_str = 'N/A'
             
-            if len(cols) >= 4:
-                date = cols[0].get_text().strip()
-                action = cols[1].get_text().strip()
-                analyst = cols[2].get_text().strip()
-                rating = cols[3].get_text().strip()
-                
-                # Price target might be in 4th or 5th column
-                price_target = 'N/A'
-                if len(cols) > 4:
-                    pt_text = cols[4].get_text().strip()
-                    pt_match = re.search(r'\$?(\d+)', pt_text)
-                    if pt_match:
-                        price_target = f"${pt_match.group(1)}"
-                
-                ratings_list.append({
-                    'Date': date,
-                    'Action': action,
-                    'Analyst': analyst,
-                    'Rating': rating,
-                    'Price Target': price_target
-                })
+            # Extract info
+            title = item.get('title', 'No title')
+            link = item.get('link', '#')
+            publisher = item.get('publisher', 'Yahoo Finance')
+            
+            news_list.append({
+                'Date': date_str,
+                'Time': time_str,
+                'Source': publisher,
+                'Title': title,
+                'Link': link
+            })
         
-        if ratings_list:
-            return pd.DataFrame(ratings_list)
-        else:
-            return None
+        return news_list
     
     except Exception as e:
-        st.warning(f"Could not fetch analyst ratings for {ticker}: {str(e)[:100]}")
-        return None
+        st.warning(f"Could not fetch Yahoo Finance news for {ticker}: {str(e)[:100]}")
+        return []
+
+
+@st.cache_data(ttl=1800)  # Cache for 30 minutes
+def scrape_google_news(ticker: str, max_news: int = 10):
+    """
+    Scrape latest news from Google News using RSS
+    Returns: List of dicts with {date, time, title, link, source}
+    """
+    if not FEEDPARSER_AVAILABLE:
+        st.warning("feedparser not installed. Run: pip install feedparser --break-system-packages")
+        return []
+    
+    try:
+        # Google News RSS feed for stock ticker
+        query = f"{ticker} stock"
+        rss_url = f"https://news.google.com/rss/search?q={query.replace(' ', '+')}&hl=en-US&gl=US&ceid=US:en"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = requests.get(rss_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        # Parse RSS feed
+        feed = feedparser.parse(response.content)
+        
+        if not feed.entries:
+            return []
+        
+        news_list = []
+        
+        for entry in feed.entries[:max_news]:
+            # Parse timestamp
+            published = entry.get('published_parsed', None)
+            if published:
+                dt = datetime(*published[:6])
+                date_str = dt.strftime('%b-%d-%y')
+                time_str = dt.strftime('%I:%M%p')
+            else:
+                date_str = 'Today'
+                time_str = 'N/A'
+            
+            # Extract info
+            title = entry.get('title', 'No title')
+            link = entry.get('link', '#')
+            
+            # Extract source from title (Google News format: "Title - Source")
+            source = 'Google News'
+            if ' - ' in title:
+                parts = title.rsplit(' - ', 1)
+                if len(parts) == 2:
+                    title = parts[0]
+                    source = parts[1]
+            
+            news_list.append({
+                'Date': date_str,
+                'Time': time_str,
+                'Source': source,
+                'Title': title,
+                'Link': link
+            })
+        
+        return news_list
+    
+    except Exception as e:
+        st.warning(f"Could not fetch Google News for {ticker}: {str(e)[:100]}")
+        return []
+
+
+def get_news_from_source(ticker: str, source: str, max_news: int = 10):
+    """
+    Unified function to get news from selected source
+    
+    Args:
+        ticker: Stock ticker symbol
+        source: News source ('Finviz', 'Yahoo Finance', 'Google News')
+        max_news: Maximum number of news items to fetch
+    
+    Returns:
+        List of news items
+    """
+    if source == "Finviz":
+        return scrape_finviz_news(ticker, max_news)
+    elif source == "Yahoo Finance":
+        return scrape_yahoo_finance_news(ticker, max_news)
+    elif source == "Google News":
+        return scrape_google_news(ticker, max_news)
+    else:
+        return []
 
 
 # -------------------- Sentiment Analysis --------------------
@@ -1064,7 +1147,7 @@ def backtest_strategy(df: pd.DataFrame, weights: dict, initial_capital: float = 
 # ==================== UI LAYOUT ====================
 
 st.title("📈 Enhanced Stock Dashboard v2.2 (by Sadiq)")
-st.caption("Advanced technical analysis with ML models, strategy backtesting, and real-time news intelligence")
+st.caption("Advanced technical analysis with ML models, multi-source news, and strategy backtesting")
 
 # Sidebar Configuration
 st.sidebar.header("⚙️ Configuration")
@@ -1250,194 +1333,135 @@ fig.add_trace(go.Bar(x=df.index, y=df['MACD_hist'], name='Histogram'), row=3, co
 fig.update_layout(height=800, xaxis_rangeslider_visible=False, showlegend=True)
 st.plotly_chart(fig, use_container_width=True)
 
-# ==================== News & Analyst Ratings Section ====================
+# ==================== Multi-Source News Section ====================
 
 st.markdown("---")
-st.header(f"📰 News & Analyst Intelligence for {selected}")
+st.header(f"📰 Latest News & Sentiment for {selected}")
 
-# Refresh button
-col_header, col_button = st.columns([4, 1])
-with col_header:
-    st.caption("Latest news and analyst ratings from Finviz.com")
-with col_button:
-    if st.button("🔄 Refresh", key="refresh_finviz", type="secondary"):
+# Header with source selector and refresh button
+col_source, col_spacer, col_refresh = st.columns([2, 2, 1])
+
+with col_source:
+    news_source = st.selectbox(
+        "📡 News Source:",
+        options=["Finviz", "Yahoo Finance", "Google News"],
+        index=0,
+        key="news_source_selector",
+        help="Choose where to fetch news from"
+    )
+
+with col_refresh:
+    st.write("")  # Spacer
+    st.write("")  # Spacer
+    if st.button("🔄 Refresh News", key="refresh_news", type="secondary"):
+        # Clear all news caches
         scrape_finviz_news.clear()
-        scrape_finviz_analyst_ratings.clear()
-        st.success("✅ Refreshed!")
+        scrape_yahoo_finance_news.clear()
+        scrape_google_news.clear()
+        st.success("✅ News refreshed!")
         st.rerun()
 
 st.markdown("---")
 
-# Create columns for news and ratings
-col_news, col_ratings = st.columns([3, 2])
+# Fetch news from selected source
+st.subheader(f"📰 Latest News from {news_source}")
 
-# ======================== NEWS COLUMN ========================
-with col_news:
-    st.subheader("📰 Latest News from Finviz")
+with st.spinner(f"Fetching latest news from {news_source}..."):
+    news_data = get_news_from_source(selected, news_source, max_news=10)
+
+if news_data:
+    # Analyze sentiment
+    news_data = analyze_news_sentiment(news_data)
     
-    with st.spinner("Fetching latest news..."):
-        news_data = scrape_finviz_news(selected, max_news=10)
+    st.caption(f"📊 Showing {len(news_data)} most recent news items from {news_source}")
     
-    if news_data:
-        # Analyze sentiment
-        news_data = analyze_news_sentiment(news_data)
+    # Create DataFrame for table display
+    news_table_data = []
+    for item in news_data:
+        # Format timestamp
+        timestamp = f"{item.get('Date', 'N/A')} {item.get('Time', 'N/A')}"
         
-        st.caption(f"📊 Showing {len(news_data)} most recent news items")
+        # Create clickable link
+        title = item.get('Title', 'No title')
+        link = item.get('Link', '#')
         
-        # Create DataFrame for table display
-        news_table_data = []
-        for item in news_data:
-            # Format timestamp
-            timestamp = f"{item.get('Date', 'N/A')} {item.get('Time', 'N/A')}"
-            
-            # Create clickable link
-            title = item.get('Title', 'No title')
-            link = item.get('Link', '#')
-            
-            # Sentiment
-            sentiment_emoji = item.get('sentiment_emoji', '⚪')
-            sentiment_label = item.get('sentiment_label', 'N/A')
-            sentiment_score = item.get('sentiment_score', 0.0)
-            sentiment_display = f"{sentiment_emoji} {sentiment_label} ({sentiment_score:.2f})"
-            
-            news_table_data.append({
-                'Timestamp': timestamp,
-                'Headline': title,
-                'Link': link,
-                'Sentiment': sentiment_display,
-                'Source': item.get('Source', 'Unknown')
-            })
+        # Sentiment
+        sentiment_emoji = item.get('sentiment_emoji', '⚪')
+        sentiment_label = item.get('sentiment_label', 'N/A')
+        sentiment_score = item.get('sentiment_score', 0.0)
+        sentiment_display = f"{sentiment_emoji} {sentiment_label} ({sentiment_score:.2f})"
         
-        # Create DataFrame
-        news_df = pd.DataFrame(news_table_data)
-        
-        # Display as interactive table with clickable links
-        st.markdown("**Click on headlines to read full articles:**")
-        
-        # Create HTML table with clickable links
-        html_table = '<table style="width:100%; border-collapse: collapse;">'
-        html_table += '<tr style="background-color: #f0f2f6; font-weight: bold;">'
-        html_table += '<th style="padding: 10px; text-align: left; border-bottom: 2px solid #ddd;">Time</th>'
-        html_table += '<th style="padding: 10px; text-align: left; border-bottom: 2px solid #ddd;">Headline</th>'
-        html_table += '<th style="padding: 10px; text-align: center; border-bottom: 2px solid #ddd;">Sentiment</th>'
+        news_table_data.append({
+            'Timestamp': timestamp,
+            'Headline': title,
+            'Link': link,
+            'Sentiment': sentiment_display,
+            'Source': item.get('Source', news_source)
+        })
+    
+    # Create DataFrame
+    news_df = pd.DataFrame(news_table_data)
+    
+    # Display as interactive table with clickable links
+    st.markdown("**Click on headlines to read full articles:**")
+    
+    # Create HTML table with clickable links
+    html_table = '<table style="width:100%; border-collapse: collapse;">'
+    html_table += '<tr style="background-color: #f0f2f6; font-weight: bold;">'
+    html_table += '<th style="padding: 10px; text-align: left; border-bottom: 2px solid #ddd;">Time</th>'
+    html_table += '<th style="padding: 10px; text-align: left; border-bottom: 2px solid #ddd;">Headline</th>'
+    html_table += '<th style="padding: 10px; text-align: center; border-bottom: 2px solid #ddd;">Sentiment</th>'
+    html_table += '</tr>'
+    
+    for idx, row in news_df.iterrows():
+        html_table += f'<tr style="border-bottom: 1px solid #ddd;">'
+        html_table += f'<td style="padding: 8px; vertical-align: top; white-space: nowrap;">{row["Timestamp"]}</td>'
+        html_table += f'<td style="padding: 8px;"><a href="{row["Link"]}" target="_blank" style="color: #0066cc; text-decoration: none;">{row["Headline"]}</a><br><small style="color: #666;">📡 {row["Source"]}</small></td>'
+        html_table += f'<td style="padding: 8px; text-align: center; white-space: nowrap;">{row["Sentiment"]}</td>'
         html_table += '</tr>'
-        
-        for idx, row in news_df.iterrows():
-            html_table += f'<tr style="border-bottom: 1px solid #ddd;">'
-            html_table += f'<td style="padding: 8px; vertical-align: top; white-space: nowrap;">{row["Timestamp"]}</td>'
-            html_table += f'<td style="padding: 8px;"><a href="{row["Link"]}" target="_blank" style="color: #0066cc; text-decoration: none;">{row["Headline"]}</a><br><small style="color: #666;">📡 {row["Source"]}</small></td>'
-            html_table += f'<td style="padding: 8px; text-align: center; white-space: nowrap;">{row["Sentiment"]}</td>'
-            html_table += '</tr>'
-        
-        html_table += '</table>'
-        
-        # Display HTML table
-        st.markdown(html_table, unsafe_allow_html=True)
-        
-        # Overall sentiment summary
-        if SENTIMENT_AVAILABLE:
-            st.markdown("---")
-            st.markdown("**📊 Overall Sentiment Summary:**")
-            
-            sentiment_scores = [item.get('sentiment_score', 0) for item in news_data]
-            avg_sentiment = sum(sentiment_scores) / len(sentiment_scores)
-            
-            col_s1, col_s2, col_s3, col_s4 = st.columns(4)
-            
-            positive_count = sum(1 for s in sentiment_scores if s >= 0.05)
-            neutral_count = sum(1 for s in sentiment_scores if -0.05 < s < 0.05)
-            negative_count = sum(1 for s in sentiment_scores if s <= -0.05)
-            
-            col_s1.metric("🟢 Positive", f"{positive_count}")
-            col_s2.metric("🟡 Neutral", f"{neutral_count}")
-            col_s3.metric("🔴 Negative", f"{negative_count}")
-            col_s4.metric("Average Score", f"{avg_sentiment:.2f}")
-            
-            # Overall sentiment indicator
-            if avg_sentiment >= 0.05:
-                st.success(f"📈 Overall Positive News Sentiment")
-            elif avg_sentiment <= -0.05:
-                st.error(f"📉 Overall Negative News Sentiment")
-            else:
-                st.info(f"➡️ Overall Neutral News Sentiment")
-    else:
-        st.info("📭 No recent news available from Finviz at this time")
-        st.caption("This could be due to network issues or the ticker not being covered on Finviz")
-
-# ======================== ANALYST RATINGS COLUMN ========================
-with col_ratings:
-    st.subheader("🎯 Analyst Ratings")
     
-    with st.spinner("Fetching analyst ratings..."):
-        ratings_df = scrape_finviz_analyst_ratings(selected)
+    html_table += '</table>'
     
-    if ratings_df is not None and not ratings_df.empty:
-        # Display the full table
-        st.dataframe(
-            ratings_df,
-            use_container_width=True,
-            height=400,
-            hide_index=True
-        )
-        
-        # Summary statistics
+    # Display HTML table
+    st.markdown(html_table, unsafe_allow_html=True)
+    
+    # Overall sentiment summary
+    if SENTIMENT_AVAILABLE:
         st.markdown("---")
-        st.markdown("**📊 Recent Consensus:**")
+        st.markdown("**📊 Overall Sentiment Summary:**")
         
-        col1, col2 = st.columns(2)
+        sentiment_scores = [item.get('sentiment_score', 0) for item in news_data]
+        avg_sentiment = sum(sentiment_scores) / len(sentiment_scores)
         
-        with col1:
-            if 'Rating' in ratings_df.columns:
-                rating_counts = ratings_df['Rating'].value_counts()
-                st.write("**Ratings:**")
-                for rating, count in rating_counts.head(3).items():
-                    st.write(f"• {rating}: {count}x")
+        col_s1, col_s2, col_s3, col_s4 = st.columns(4)
         
-        with col2:
-            if 'Action' in ratings_df.columns:
-                action_counts = ratings_df['Action'].value_counts()
-                st.write("**Actions:**")
-                for action, count in action_counts.items():
-                    st.write(f"• {action}: {count}x")
+        positive_count = sum(1 for s in sentiment_scores if s >= 0.05)
+        neutral_count = sum(1 for s in sentiment_scores if -0.05 < s < 0.05)
+        negative_count = sum(1 for s in sentiment_scores if s <= -0.05)
         
-        # Price target analysis
-        if 'Price Target' in ratings_df.columns:
-            price_targets = []
-            for pt in ratings_df['Price Target']:
-                if pt != 'N/A':
-                    try:
-                        value = float(pt.replace('$', '').replace(',', ''))
-                        price_targets.append(value)
-                    except:
-                        continue
-            
-            if price_targets:
-                avg_target = sum(price_targets) / len(price_targets)
-                current_price_val = float(latest['Close'])
-                upside = ((avg_target - current_price_val) / current_price_val) * 100
-                
-                st.markdown("---")
-                st.metric(
-                    "📈 Avg Price Target", 
-                    f"${avg_target:.2f}",
-                    f"{upside:+.1f}%",
-                    help=f"Based on {len(price_targets)} analyst(s)"
-                )
+        col_s1.metric("🟢 Positive", f"{positive_count}")
+        col_s2.metric("🟡 Neutral", f"{neutral_count}")
+        col_s3.metric("🔴 Negative", f"{negative_count}")
+        col_s4.metric("Average Score", f"{avg_sentiment:.2f}")
+        
+        # Overall sentiment indicator
+        if avg_sentiment >= 0.05:
+            st.success(f"📈 Overall Positive News Sentiment on {news_source}")
+        elif avg_sentiment <= -0.05:
+            st.error(f"📉 Overall Negative News Sentiment on {news_source}")
+        else:
+            st.info(f"➡️ Overall Neutral News Sentiment on {news_source}")
+else:
+    st.info(f"📭 No recent news available from {news_source} at this time")
+    st.caption(f"This could be due to network issues or {selected} not being covered on {news_source}")
+    
+    # Suggest trying other sources
+    if news_source == "Finviz":
+        st.info("💡 Try switching to **Yahoo Finance** or **Google News** for more coverage")
+    elif news_source == "Yahoo Finance":
+        st.info("💡 Try switching to **Finviz** or **Google News** for different sources")
     else:
-        st.info("📭 No analyst ratings available")
-        st.caption("Some stocks may not have analyst coverage on Finviz")
-        
-        # Debug information
-        with st.expander("🔍 Troubleshooting - Why no ratings?"):
-            st.write("**Possible reasons:**")
-            st.write(f"• {selected} may not have recent analyst coverage on Finviz")
-            st.write("• Finviz free tier may not show ratings for all stocks")
-            st.write("• Try testing with: AAPL, MSFT, GOOGL, TSLA")
-            st.write("• Finviz might be blocking automated requests")
-            
-            # Test link
-            st.markdown(f"**🔗 [Check {selected} on Finviz.com](https://finviz.com/quote.ashx?t={selected})**")
-            st.caption("Open this link to verify if analyst ratings exist on the website")
+        st.info("💡 Try switching to **Finviz** or **Yahoo Finance** for ticker-specific news")
 
 # ==================== Rule-Based Recommendation ====================
 
@@ -1584,23 +1608,20 @@ st.markdown("---")
 st.subheader("📝 Notes & Disclaimers")
 
 st.write("""
-### Improvements in v2.2:
+### Improvements in v2.2 - FINAL:
+- ✅ **Multi-Source News** - Finviz, Yahoo Finance, Google News with dropdown selector
+- ✅ **News Sentiment Analysis** - VADER sentiment on all news sources with table display
 - ✅ **Machine Learning Integration** - Random Forest, XGBoost, ARIMA+GARCH, LSTM, RNN, Monte Carlo
-- ✅ **News Sentiment Analysis** - VADER sentiment on Finviz news headlines with table display
-- ✅ **Analyst Ratings** - Real-time analyst ratings from Finviz with consensus metrics
 - ✅ **Ensemble Recommendations** - Simple majority voting across all models
 - ✅ **Comprehensive Metrics** - Accuracy, Precision, Recall, F1-Score, AUC for each model
-- ✅ **On-the-fly Training** - Models trained on historical data with technical indicators
-- ✅ **Smart Caching** - ML results cached per ticker to avoid retraining
+- ✅ **Strategy Backtesting** - With risk management (stop loss, take profit)
+- ✅ **Risk Analytics** - Sharpe, Sortino, Max Drawdown, Calmar ratio
+- ❌ **Analyst Ratings Removed** - As requested
 
-### Key Features:
-- **Random Forest & XGBoost**: Tree-based ensemble methods for robust predictions
-- **ARIMA + GARCH**: Statistical time series models combining price forecasts with volatility
-- **LSTM & RNN**: Deep learning models capturing temporal patterns in price movements
-- **Monte Carlo Simulation**: Probabilistic approach to estimate price target probabilities
-- **Ensemble Method**: Combines all models using simple majority vote for consensus
-- **News Intelligence**: Real-time news with sentiment analysis (Positive/Neutral/Negative)
-- **Analyst Intelligence**: Analyst ratings, price targets, and consensus data
+### News Sources:
+- **Finviz**: Premium financial news (best for large-cap stocks)
+- **Yahoo Finance**: Official API with reliable news (works for most stocks)
+- **Google News**: Broadest coverage via RSS (works for all companies)
 
 ### Limitations & Disclaimers:
 - ⚠️ **NOT FINANCIAL ADVICE** - This tool is for educational purposes only
@@ -1608,10 +1629,20 @@ st.write("""
 - ⚠️ ML models can overfit to historical patterns that may not persist
 - ⚠️ Market conditions change - models trained on past data may not predict future well
 - ⚠️ Sentiment analysis is based on headlines only, not full article content
-- ⚠️ Analyst ratings availability varies by stock and may not be complete
 - ⚠️ Always do your own research and consult a financial advisor
 - ⚠️ Consider paper trading before using real capital
+
+### Dependencies:
+- `pip install feedparser --break-system-packages` (for Google News)
+- `pip install vaderSentiment nltk --break-system-packages` (for sentiment analysis)
+
+### Recommended Next Steps:
+1. Compare sentiment across different news sources
+2. Monitor ensemble agreement - high disagreement suggests uncertainty
+3. Test different weight configurations for rule-based signals
+4. Paper trade the strategy for at least 3 months before deploying real capital
+5. Consider adding fundamental analysis (earnings, revenue growth, debt ratios)
 """)
 
 st.markdown("---")
-st.caption("Enhanced Stock Dashboard v2.2 (by Sadiq) | Built with Streamlit | Data: Yahoo Finance, Finviz | ML: scikit-learn, XGBoost, TensorFlow, statsmodels")
+st.caption("Enhanced Stock Dashboard v2.2 - FINAL | Built with Streamlit | Data: Yahoo Finance, Finviz, Google News | ML: scikit-learn, XGBoost, TensorFlow")
