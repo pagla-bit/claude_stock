@@ -43,6 +43,7 @@ keras>=2.13.0
 
 statsmodels>=0.14.0
 arch>=6.2.0
+tensorflow>=2.13.0
 
 # Optional: For better performance
 # numexpr>=2.8.0
