@@ -549,93 +549,60 @@ def train_xgboost(X, y):
 def train_arima_garch(df: pd.DataFrame):
     """Train ARIMA for price and GARCH for volatility"""
     returns = df['Close'].pct_change().dropna()
+    current_price = df['Close'].iloc[-1]
     
-    # ARIMA for returns prediction
+    # ARIMA for price prediction (using log prices for better stability)
     try:
-        arima_model = ARIMA(returns, order=(1, 1, 1))
+        log_prices = np.log(df['Close'])
+        arima_model = ARIMA(log_prices, order=(2, 1, 2))
         arima_fit = arima_model.fit()
-        arima_forecast = arima_fit.forecast(steps=10)
-        predicted_return = arima_forecast.mean()
+        log_forecast = arima_fit.forecast(steps=5)
+        predicted_price = np.exp(log_forecast.iloc[-1])
+        predicted_return = (predicted_price - current_price) / current_price
     except:
-        predicted_return = 0.0
+        predicted_return = returns.tail(10).mean() * 5
     
     # GARCH for volatility
     try:
         garch_model = arch_model(returns.dropna() * 100, vol='Garch', p=1, q=1)
         garch_fit = garch_model.fit(disp='off')
-        garch_forecast = garch_fit.forecast(horizon=10)
-        predicted_volatility = garch_forecast.variance.values[-1, :].mean() / 10000
+        garch_forecast = garch_fit.forecast(horizon=5)
+        predicted_volatility = np.sqrt(garch_forecast.variance.values[-1, :].mean()) / 100
     except:
-        predicted_volatility = returns.std()
+        predicted_volatility = returns.std() * np.sqrt(5)
     
-    # Combine: Adjust return prediction with volatility
-    current_price = df['Close'].iloc[-1]
-    predicted_price = current_price * (1 + predicted_return)
+    # Risk-adjusted thresholds based on volatility
+    buy_threshold = max(0.005, predicted_volatility * 0.5)
+    sell_threshold = -buy_threshold
     
-    # Classification based on predicted return and volatility
-    if predicted_return > 0.02:
+    # Calculate confidence based on signal strength relative to volatility
+    if predicted_volatility > 0:
+        signal_strength = abs(predicted_return) / predicted_volatility
+        base_confidence = min(0.9, 0.5 + signal_strength * 0.2)
+    else:
+        base_confidence = 0.5
+    
+    # Classification with dynamic thresholds
+    if predicted_return > buy_threshold:
         prediction = 1  # BUY
-        confidence = min(0.95, 0.5 + abs(predicted_return) / (2 * predicted_volatility))
-    elif predicted_return < -0.02:
+        confidence = base_confidence
+    elif predicted_return < sell_threshold:
         prediction = -1  # SELL
-        confidence = min(0.95, 0.5 + abs(predicted_return) / (2 * predicted_volatility))
+        confidence = base_confidence
     else:
         prediction = 0  # HOLD
         confidence = 0.5
     
-    params_str = "ARIMA(1,1,1) + GARCH(1,1), horizon=10d"
-    metrics_str = f"Pred Return:{predicted_return:.2%} Volatility:{predicted_volatility:.2%}"
+    # Add directional bias based on recent trend
+    recent_trend = (df['Close'].iloc[-1] - df['Close'].iloc[-5]) / df['Close'].iloc[-5]
+    if abs(recent_trend) > 0.02:
+        if (recent_trend > 0 and prediction >= 0) or (recent_trend < 0 and prediction <= 0):
+            confidence = min(0.95, confidence + 0.1)
+    
+    params_str = "ARIMA(2,1,2) + GARCH(1,1), horizon=5d, adaptive thresholds"
+    metrics_str = f"Pred:{predicted_return:.2%} Vol:{predicted_volatility:.2%} Threshold:±{buy_threshold:.2%}"
     
     return None, params_str, metrics_str, prediction, confidence
-
-def train_lstm(X, y, seq_length=60):
-    """Train LSTM model"""
-    # Normalize features
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    
-    # Create sequences - need to align y properly
-    X_seq_list = []
-    y_seq_list = []
-    
-    for i in range(len(X_scaled) - seq_length):
-        X_seq_list.append(X_scaled[i:i+seq_length])
-        y_seq_list.append(y[i+seq_length])  # Target is the label AFTER the sequence
-    
-    X_seq = np.array(X_seq_list)
-    y_seq = np.array(y_seq_list)
-    
-    if len(X_seq) < 10:
-        return None, "Insufficient data", "N/A", 0, 0.5
-    
-    # Encode labels: -1 -> 0, 0 -> 1, 1 -> 2
-    y_seq_encoded = y_seq + 1
-    
-    # Build model
-    model = Sequential([
-        LSTM(50, return_sequences=True, input_shape=(seq_length, X.shape[1])),
-        Dropout(0.2),
-        LSTM(50, return_sequences=False),
-        Dropout(0.2),
-        Dense(3, activation='softmax')
-    ])
-    
-    model.compile(optimizer=Adam(learning_rate=0.001), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
-    
-    # Train
-    model.fit(X_seq, y_seq_encoded, epochs=20, batch_size=32, verbose=0)
-    
-    # Predict
-    y_pred_proba = model.predict(X_seq, verbose=0)
-    y_pred_encoded = np.argmax(y_pred_proba, axis=1)
-    y_pred = y_pred_encoded - 1
-    
-    accuracy = accuracy_score(y_seq_encoded, y_pred_encoded)
-    
-    params_str = "layers=[LSTM(50), LSTM(50)], seq_len=60, epochs=20"
-    metrics_str = f"Acc:{accuracy:.2%}"
-    
-    return model, params_str, metrics_str, y_pred[-1], y_pred_proba[-1]
 
 def train_rnn(X, y, seq_length=60):
     """Train Simple RNN model"""
