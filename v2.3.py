@@ -1,5 +1,5 @@
 """
-Enhanced Streamlit Stock Dashboard v2.3 - FINAL VERSION
+Enhanced Streamlit Stock Dashboard v2.3 - FINAL VERSION (FinBERT Sentiment Only)
 Key improvements:
 - Fixed signal weighting logic with proper modifiers
 - Advanced Monte Carlo with fat-tailed distributions
@@ -8,7 +8,7 @@ Key improvements:
 - Machine Learning Models Integration (RF, XGBoost, ARIMA, GARCH, LSTM, RNN)
 - Ensemble recommendations from multiple algorithms
 - Multi-source news (Finviz, Yahoo Finance, Google News)
-- News sentiment analysis with table format
+- News sentiment analysis with FinBERT ONLY (no VADER in table)
 - ANALYST RATINGS SECTION REMOVED
 """
 # Imports
@@ -294,67 +294,14 @@ def get_news_from_source(ticker: str, source: str, max_news: int = 10):
     """
     if source == "Finviz":
         return scrape_finviz_news(ticker, max_news)
-######################################################################################
-######################################################################################
     elif source == "Google News":
         return scrape_google_news(ticker, max_news)
     else:
         return []
 
 
-# -------------------- Sentiment Analysis --------------------
+# -------------------- Sentiment Analysis (FinBERT ONLY) --------------------
 
-def analyze_news_sentiment(news_data: list):
-    """
-    Add sentiment analysis to news items
-    Returns: news_data with added 'sentiment' and 'sentiment_label' fields
-    """
-    if not SENTIMENT_AVAILABLE:
-        # If VADER not available, add neutral sentiment to all
-        for item in news_data:
-            item['sentiment_score'] = 0.0
-            item['sentiment_label'] = 'N/A'
-            item['sentiment_emoji'] = '⚪'
-            item['sentiment_color'] = 'gray'
-        return news_data
-    
-    try:
-        analyzer = SentimentIntensityAnalyzer()
-        
-        for item in news_data:
-            # Analyze title sentiment
-            sentiment_scores = analyzer.polarity_scores(item['Title'])
-            compound = sentiment_scores['compound']
-            
-            # Add sentiment score
-            item['sentiment_score'] = compound
-            
-            # Categorize sentiment
-            if compound >= 0.05:
-                item['sentiment_label'] = 'Positive'
-                item['sentiment_emoji'] = '🟢'
-                item['sentiment_color'] = 'green'
-            elif compound <= -0.05:
-                item['sentiment_label'] = 'Negative'
-                item['sentiment_emoji'] = '🔴'
-                item['sentiment_color'] = 'red'
-            else:
-                item['sentiment_label'] = 'Neutral'
-                item['sentiment_emoji'] = '🟡'
-                item['sentiment_color'] = 'orange'
-        
-        return news_data
-    
-    except Exception as e:
-        # If sentiment fails, add neutral sentiment
-        for item in news_data:
-            item['sentiment_score'] = 0.0
-            item['sentiment_label'] = 'Error'
-            item['sentiment_emoji'] = '⚪'
-            item['sentiment_color'] = 'gray'
-        return news_data
-
-############# BERT addition #################
 # Global variables for model caching
 _finbert_model = None
 _finbert_tokenizer = None
@@ -418,71 +365,54 @@ def get_finbert_sentiment(text: str):
         return "N/A", 0.0
 
 
-def analyze_news_sentiment_with_bert(news_data: list, use_bert: bool = True):
+def analyze_news_sentiment_bert_only(news_data: list, use_bert: bool = True):
     """
-    Enhanced sentiment analysis with VADER + optional FinBERT
+    FinBERT-only sentiment analysis for news
     
     Args:
         news_data: List of news items
-        use_bert: Whether to use FinBERT (slower but more accurate)
+        use_bert: Whether to use FinBERT
     """
-    # Check VADER availability
-    vader_available = False
-    try:
-        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-        vader_analyzer = SentimentIntensityAnalyzer()
-        vader_available = True
-    except:
-        pass
-    
     # Check FinBERT availability
     bert_available = use_bert and (load_finbert_model()[0] is not None)
     
     for item in news_data:
         title = item['Title']
         
-        # Get VADER sentiment
-        vader_score = 0.0
-        if vader_available:
-            vader_scores = vader_analyzer.polarity_scores(title)
-            vader_score = vader_scores['compound']
-        
         # Get FinBERT sentiment
-        bert_score = 0.0
-        bert_label = "N/A"
         if bert_available:
             bert_label, bert_score = get_finbert_sentiment(title)
-        
-        # Combined score (weighted: 40% VADER, 60% FinBERT)
-        if vader_available and bert_available:
-            combined_score = 0.4 * vader_score + 0.6 * bert_score
-        elif vader_available:
-            combined_score = vader_score
-        elif bert_available:
+            
+            # Use FinBERT score directly
             combined_score = bert_score
+            
+            # Determine final label and emoji based on FinBERT
+            if combined_score >= 0.05:
+                final_label = 'Positive'
+                final_emoji = '🟢'
+                final_color = 'green'
+            elif combined_score <= -0.05:
+                final_label = 'Negative'
+                final_emoji = '🔴'
+                final_color = 'red'
+            else:
+                final_label = 'Neutral'
+                final_emoji = '🟡'
+                final_color = 'orange'
         else:
+            # If FinBERT not available, set as N/A
             combined_score = 0.0
-        
-        # Determine final label and emoji
-        if combined_score >= 0.05:
-            final_label = 'Positive'
-            final_emoji = '🟢'
-            final_color = 'green'
-        elif combined_score <= -0.05:
-            final_label = 'Negative'
-            final_emoji = '🔴'
-            final_color = 'red'
-        else:
-            final_label = 'Neutral'
-            final_emoji = '🟡'
-            final_color = 'orange'
+            final_label = 'N/A'
+            final_emoji = '⚪'
+            final_color = 'gray'
+            bert_label = 'N/A'
+            bert_score = 0.0
         
         # Add sentiment data
         item['sentiment_label'] = final_label
         item['sentiment_score'] = combined_score
         item['sentiment_emoji'] = final_emoji
         item['sentiment_color'] = final_color
-        item['vader_score'] = vader_score
         item['bert_score'] = bert_score
         item['bert_label'] = bert_label
         item['bert_available'] = bert_available
@@ -786,6 +716,7 @@ def train_lstm(X, y, seq_length=60):
     metrics_str = f"Acc:{accuracy:.2%}"
     
     return model, params_str, metrics_str, y_pred[-1], y_pred_proba[-1]
+
 def train_rnn(X, y, seq_length=60):
     """Train Simple RNN model"""
     # Normalize features
@@ -1550,7 +1481,6 @@ with col_refresh:
     if st.button("🔄 Refresh News", key="refresh_news", type="secondary"):
         # Clear all news caches
         scrape_finviz_news.clear()
-#######################################################################################################################################################################        
         scrape_google_news.clear()
         st.success("✅ News refreshed!")
         st.rerun()
@@ -1564,12 +1494,12 @@ with st.spinner(f"Fetching latest news from {news_source}..."):
     news_data = get_news_from_source(selected, news_source, max_news=10)
 
 if news_data:
-    # Analyze sentiment
+    # Analyze sentiment - FinBERT only
     if use_finbert:
         with st.spinner("Analyzing with FinBERT... (this may take 10-15 seconds)"):
-            news_data = analyze_news_sentiment_with_bert(news_data, use_bert=True)
+            news_data = analyze_news_sentiment_bert_only(news_data, use_bert=True)
     else:
-        news_data = analyze_news_sentiment_with_bert(news_data, use_bert=False)
+        news_data = analyze_news_sentiment_bert_only(news_data, use_bert=False)
     
     st.caption(f"📊 Showing {len(news_data)} most recent news items from {news_source}")
     
@@ -1583,17 +1513,17 @@ if news_data:
         title = item.get('Title', 'No title')
         link = item.get('Link', '#')
         
-        # Sentiment
-        sentiment_emoji = item.get('sentiment_emoji', '⚪')
-        sentiment_label = item.get('sentiment_label', 'N/A')
-        sentiment_score = item.get('sentiment_score', 0.0)
-        sentiment_display = f"{sentiment_emoji} {sentiment_label} ({sentiment_score:.2f})"
-        
+        # Store raw sentiment data for later use in HTML table
         news_table_data.append({
             'Timestamp': timestamp,
             'Headline': title,
             'Link': link,
-            'Sentiment': sentiment_display,
+            'sentiment_emoji': item.get('sentiment_emoji', '⚪'),
+            'sentiment_label': item.get('sentiment_label', 'N/A'),
+            'sentiment_score': item.get('sentiment_score', 0.0),
+            'bert_score': item.get('bert_score', 0.0),
+            'bert_label': item.get('bert_label', 'N/A'),
+            'bert_available': item.get('bert_available', False),
             'Source': item.get('Source', news_source)
         })
     
@@ -1603,7 +1533,7 @@ if news_data:
     # Display as interactive table with clickable links
     st.markdown("**Click on headlines to read full articles:**")
     
-    # Create HTML table with clickable links
+    # Create HTML table with clickable links and FinBERT-only sentiment
     html_table = '<table style="width:100%; border-collapse: collapse;">'
     html_table += '<tr style="background-color: #f0f2f6; font-weight: bold;">'
     html_table += '<th style="padding: 10px; text-align: left; border-bottom: 2px solid #ddd;">Time</th>'
@@ -1615,17 +1545,18 @@ if news_data:
         html_table += f'<tr style="border-bottom: 1px solid #ddd;">'
         html_table += f'<td style="padding: 8px; vertical-align: top; white-space: nowrap;">{row["Timestamp"]}</td>'
         html_table += f'<td style="padding: 8px;"><a href="{row["Link"]}" target="_blank" style="color: #0066cc; text-decoration: none;">{row["Headline"]}</a><br><small style="color: #666;">📡 {row["Source"]}</small></td>'
-        # Build sentiment display
-        sentiment_emoji = row.get("sentiment_emoji", "⚪")
-        sentiment_label = row.get("sentiment_label", "N/A")
-        sentiment_score = row.get("sentiment_score", 0.0)
-        sentiment_display = f'{sentiment_emoji} <strong>{sentiment_label}</strong> ({sentiment_score:.2f})'
-    
-        if row.get('bert_available', False):
-            vader_score = row.get('vader_score', 0.0)
-            bert_score = row.get('bert_score', 0.0)
-            sentiment_display += f'<br><small style="color: #666;">VADER: {vader_score:.2f} | FinBERT: {bert_score:.2f}</small>'
-    
+        
+        # Build sentiment display - FinBERT only
+        sentiment_emoji = row['sentiment_emoji']
+        sentiment_label = row['sentiment_label']
+        sentiment_score = row['sentiment_score']
+        
+        if row['bert_available']:
+            bert_score = row['bert_score']
+            sentiment_display = f'{sentiment_emoji} <strong>{sentiment_label}</strong> (FinBERT: {bert_score:.2f})'
+        else:
+            sentiment_display = f'{sentiment_emoji} <strong>{sentiment_label}</strong>'
+        
         html_table += f'<td style="padding: 8px; text-align: center; white-space: nowrap;">{sentiment_display}</td>'
         html_table += '</tr>'
     
@@ -1655,19 +1586,11 @@ if news_data:
     
         # Show method used
         if news_data[0].get('bert_available', False):
-            st.caption("📊 Using combined VADER + FinBERT sentiment (40% VADER, 60% FinBERT)")
+            st.caption("📊 Using FinBERT sentiment analysis (financial domain-specific)")
         else:
-            st.caption("📊 Using VADER sentiment analysis")
+            st.caption("⚠️ FinBERT not available - showing neutral sentiment")
     
         # Overall indicator
-        if avg_sentiment >= 0.05:
-            st.success(f"📈 Overall Positive News Sentiment on {news_source}")
-        elif avg_sentiment <= -0.05:
-            st.error(f"📉 Overall Negative News Sentiment on {news_source}")
-        else:
-            st.info(f"➡️ Overall Neutral News Sentiment on {news_source}")
-        
-        # Overall sentiment indicator
         if avg_sentiment >= 0.05:
             st.success(f"📈 Overall Positive News Sentiment on {news_source}")
         elif avg_sentiment <= -0.05:
@@ -1680,11 +1603,9 @@ else:
     
     # Suggest trying other sources
     if news_source == "Finviz":
-        st.info("💡 Try switching to **Yahoo Finance** or **Google News** for more coverage")
-##################################################################################################################
-##################################################################################################################
+        st.info("💡 Try switching to **Google News** for more coverage")
     else:
-        st.info("💡 Try switching to **Finviz** or **Yahoo Finance** for ticker-specific news")
+        st.info("💡 Try switching to **Finviz** for ticker-specific news")
 
 # ==================== Rule-Based Recommendation ====================
 
@@ -1824,7 +1745,7 @@ with st.spinner("Running Monte Carlo simulations..."):
 mc_df = pd.DataFrame(sim_results)
 st.dataframe(mc_df, use_container_width=True)
 st.info(f"💡 Based on {sim_count:,} simulations with {max_days} day horizon using Student's t-distribution")
-################ New Lines #################
+
 # ==================== NEW: Monte Carlo Price Simulation ====================
 
 st.markdown("---")
@@ -1847,9 +1768,9 @@ st.markdown("---")
 st.subheader("📝 Notes & Disclaimers")
 
 st.write("""
-### Improvements in v2.3 - FINAL:
-- ✅ **Multi-Source News** - Finviz, Yahoo Finance, Google News with dropdown selector
-- ✅ **News Sentiment Analysis** - VADER sentiment on all news sources with table display
+### Improvements in v2.3 - FINAL (FinBERT Only):
+- ✅ **Multi-Source News** - Finviz, Google News with dropdown selector
+- ✅ **News Sentiment Analysis** - FinBERT ONLY (no VADER in table) with table display
 - ✅ **Machine Learning Integration** - Random Forest, XGBoost, ARIMA+GARCH, LSTM, RNN, Monte Carlo
 - ✅ **Ensemble Recommendations** - Simple majority voting across all models
 - ✅ **Comprehensive Metrics** - Accuracy, Precision, Recall, F1-Score, AUC for each model
@@ -1858,8 +1779,11 @@ st.write("""
 
 ### News Sources:
 - **Finviz**: Premium financial news (best for large-cap stocks)
-- **Yahoo Finance**: Official API with reliable news (works for most stocks)
 - **Google News**: Broadest coverage via RSS (works for all companies)
+
+### Sentiment Analysis:
+- **FinBERT Only**: Domain-specific financial sentiment model (most accurate for financial news)
+- **No VADER**: Removed generic sentiment analysis to focus on financial-specific insights
 
 ### Limitations & Disclaimers:
 - ⚠️ **NOT FINANCIAL ADVICE** - This tool is for educational purposes only
@@ -1872,7 +1796,7 @@ st.write("""
 
 ### Dependencies:
 - `pip install feedparser --break-system-packages` (for Google News)
-- `pip install vaderSentiment nltk --break-system-packages` (for sentiment analysis)
+- `pip install transformers torch --break-system-packages` (for FinBERT)
 
 ### Recommended Next Steps:
 1. Compare sentiment across different news sources
@@ -1883,4 +1807,4 @@ st.write("""
 """)
 
 st.markdown("---")
-st.caption("Enhanced Stock Dashboard v2.3 - FINAL | Built with Streamlit | Data: Yahoo Finance, Finviz, Google News | ML: scikit-learn, XGBoost, TensorFlow")
+st.caption("Enhanced Stock Dashboard v2.3 - FINAL (FinBERT Only) | Built with Streamlit | Data: Yahoo Finance, Finviz, Google News | ML: scikit-learn, XGBoost, TensorFlow, FinBERT")
