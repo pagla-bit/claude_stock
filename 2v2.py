@@ -213,52 +213,6 @@ def scrape_finviz_news(ticker: str, max_news: int = 10):
 
 
 @st.cache_data(ttl=1800)  # Cache for 30 minutes
-def scrape_yahoo_finance_news(ticker: str, max_news: int = 10):
-    """
-    Scrape latest news from Yahoo Finance using yfinance
-    Returns: List of dicts with {date, time, title, link, source}
-    """
-    try:
-        stock = yf.Ticker(ticker.upper())
-        news = stock.news
-        
-        if not news:
-            return []
-        
-        news_list = []
-        
-        for item in news[:max_news]:
-            # Parse timestamp
-            timestamp = item.get('providerPublishTime', 0)
-            if timestamp:
-                dt = datetime.fromtimestamp(timestamp)
-                date_str = dt.strftime('%b-%d-%y')
-                time_str = dt.strftime('%I:%M%p')
-            else:
-                date_str = 'Today'
-                time_str = 'N/A'
-            
-            # Extract info
-            title = item.get('title', 'No title')
-            link = item.get('link', '#')
-            publisher = item.get('publisher', 'Yahoo Finance')
-            
-            news_list.append({
-                'Date': date_str,
-                'Time': time_str,
-                'Source': publisher,
-                'Title': title,
-                'Link': link
-            })
-        
-        return news_list
-    
-    except Exception as e:
-        st.warning(f"Could not fetch Yahoo Finance news for {ticker}: {str(e)[:100]}")
-        return []
-
-
-@st.cache_data(ttl=1800)  # Cache for 30 minutes
 def scrape_google_news(ticker: str, max_news: int = 10):
     """
     Scrape latest news from Google News using RSS
@@ -332,7 +286,7 @@ def get_news_from_source(ticker: str, source: str, max_news: int = 10):
     
     Args:
         ticker: Stock ticker symbol
-        source: News source ('Finviz', 'Yahoo Finance', 'Google News')
+        source: News source ('Finviz', 'Google News')
         max_news: Maximum number of news items to fetch
     
     Returns:
@@ -340,8 +294,8 @@ def get_news_from_source(ticker: str, source: str, max_news: int = 10):
     """
     if source == "Finviz":
         return scrape_finviz_news(ticker, max_news)
-    elif source == "Yahoo Finance":
-        return scrape_yahoo_finance_news(ticker, max_news)
+######################################################################################
+######################################################################################
     elif source == "Google News":
         return scrape_google_news(ticker, max_news)
     else:
@@ -1344,7 +1298,7 @@ col_source, col_spacer, col_refresh = st.columns([2, 2, 1])
 with col_source:
     news_source = st.selectbox(
         "📡 News Source:",
-        options=["Finviz", "Yahoo Finance", "Google News"],
+        options=["Finviz", "Google News"],
         index=0,
         key="news_source_selector",
         help="Choose where to fetch news from"
@@ -1356,7 +1310,7 @@ with col_refresh:
     if st.button("🔄 Refresh News", key="refresh_news", type="secondary"):
         # Clear all news caches
         scrape_finviz_news.clear()
-        scrape_yahoo_finance_news.clear()
+#######################################################################################################################################################################        
         scrape_google_news.clear()
         st.success("✅ News refreshed!")
         st.rerun()
@@ -1458,8 +1412,8 @@ else:
     # Suggest trying other sources
     if news_source == "Finviz":
         st.info("💡 Try switching to **Yahoo Finance** or **Google News** for more coverage")
-    elif news_source == "Yahoo Finance":
-        st.info("💡 Try switching to **Finviz** or **Google News** for different sources")
+##################################################################################################################
+##################################################################################################################
     else:
         st.info("💡 Try switching to **Finviz** or **Yahoo Finance** for ticker-specific news")
 
