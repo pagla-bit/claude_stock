@@ -1,5 +1,5 @@
 """
-Enhanced Streamlit Stock Dashboard v2.1
+Enhanced Streamlit Stock Dashboard v2.2
 Key improvements:
 - Fixed signal weighting logic with proper modifiers
 - Advanced Monte Carlo with fat-tailed distributions
@@ -7,8 +7,10 @@ Key improvements:
 - Strategy backtesting with performance comparison
 - Machine Learning Models Integration (RF, XGBoost, ARIMA, GARCH, LSTM, RNN)
 - Ensemble recommendations from multiple algorithms
+- News sentiment analysis with table format
+- Analyst ratings from Finviz
 """
-# Add these after your existing imports
+# Imports
 from bs4 import BeautifulSoup
 import re
 import streamlit as st
@@ -45,7 +47,7 @@ try:
 except Exception:
     SENTIMENT_AVAILABLE = False
 
-st.set_page_config(layout="wide", page_title="Enhanced Stock Dashboard v2.1 (by Sadiq)")
+st.set_page_config(layout="wide", page_title="Enhanced Stock Dashboard v2.2 (by Sadiq)")
 
 # -------------------- Data Fetching & Validation --------------------
 
@@ -261,6 +263,60 @@ def scrape_finviz_analyst_ratings(ticker: str):
     except Exception as e:
         st.warning(f"Could not fetch analyst ratings for {ticker}: {str(e)[:100]}")
         return None
+
+
+# -------------------- Sentiment Analysis --------------------
+
+def analyze_news_sentiment(news_data: list):
+    """
+    Add sentiment analysis to news items
+    Returns: news_data with added 'sentiment' and 'sentiment_label' fields
+    """
+    if not SENTIMENT_AVAILABLE:
+        # If VADER not available, add neutral sentiment to all
+        for item in news_data:
+            item['sentiment_score'] = 0.0
+            item['sentiment_label'] = 'N/A'
+            item['sentiment_emoji'] = '⚪'
+            item['sentiment_color'] = 'gray'
+        return news_data
+    
+    try:
+        analyzer = SentimentIntensityAnalyzer()
+        
+        for item in news_data:
+            # Analyze title sentiment
+            sentiment_scores = analyzer.polarity_scores(item['Title'])
+            compound = sentiment_scores['compound']
+            
+            # Add sentiment score
+            item['sentiment_score'] = compound
+            
+            # Categorize sentiment
+            if compound >= 0.05:
+                item['sentiment_label'] = 'Positive'
+                item['sentiment_emoji'] = '🟢'
+                item['sentiment_color'] = 'green'
+            elif compound <= -0.05:
+                item['sentiment_label'] = 'Negative'
+                item['sentiment_emoji'] = '🔴'
+                item['sentiment_color'] = 'red'
+            else:
+                item['sentiment_label'] = 'Neutral'
+                item['sentiment_emoji'] = '🟡'
+                item['sentiment_color'] = 'orange'
+        
+        return news_data
+    
+    except Exception as e:
+        # If sentiment fails, add neutral sentiment
+        for item in news_data:
+            item['sentiment_score'] = 0.0
+            item['sentiment_label'] = 'Error'
+            item['sentiment_emoji'] = '⚪'
+            item['sentiment_color'] = 'gray'
+        return news_data
+
 
 # -------------------- Indicator Calculations --------------------
 
@@ -738,8 +794,7 @@ def calculate_ensemble_recommendation(results):
     
     return ensemble_rec, f"{avg_confidence:.1f}%", f"{agreement:.0f}% agreement ({votes[ensemble_rec]}/{total_valid})"
 
-# -------------------- Rest of the existing code --------------------
-# (All previous functions remain the same)
+# -------------------- Rule-Based Signals --------------------
 
 def rule_based_signal_v2(df: pd.DataFrame,
                          rsi_oversold=30,
@@ -1006,11 +1061,10 @@ def backtest_strategy(df: pd.DataFrame, weights: dict, initial_capital: float = 
         'equity_curve': equity_curve
     }
 
-# -------------------- UI Layout --------------------
+# ==================== UI LAYOUT ====================
 
 st.title("📈 Enhanced Stock Dashboard v2.2 (by Sadiq)")
 st.caption("Advanced technical analysis with ML models, strategy backtesting, and real-time news intelligence")
-st.caption("Advanced technical analysis with ML models and strategy backtesting")
 
 # Sidebar Configuration
 st.sidebar.header("⚙️ Configuration")
@@ -1195,15 +1249,16 @@ fig.add_trace(go.Bar(x=df.index, y=df['MACD_hist'], name='Histogram'), row=3, co
 
 fig.update_layout(height=800, xaxis_rangeslider_visible=False, showlegend=True)
 st.plotly_chart(fig, use_container_width=True)
-# -------------------- News & Analyst Ratings Section --------------------
+
+# ==================== News & Analyst Ratings Section ====================
 
 st.markdown("---")
 st.header(f"📰 News & Analyst Intelligence for {selected}")
-# Right after: st.header(f"📰 News & Analyst Intelligence for {selected}")
 
+# Refresh button
 col_header, col_button = st.columns([4, 1])
 with col_header:
-    st.header(f"📰 News & Analyst Intelligence for {selected}")
+    st.caption("Latest news and analyst ratings from Finviz.com")
 with col_button:
     if st.button("🔄 Refresh", key="refresh_finviz", type="secondary"):
         scrape_finviz_news.clear()
@@ -1211,39 +1266,107 @@ with col_button:
         st.success("✅ Refreshed!")
         st.rerun()
 
+st.markdown("---")
+
+# Create columns for news and ratings
 col_news, col_ratings = st.columns([3, 2])
 
+# ======================== NEWS COLUMN ========================
 with col_news:
-    st.subheader("Latest News from Finviz")
+    st.subheader("📰 Latest News from Finviz")
     
     with st.spinner("Fetching latest news..."):
         news_data = scrape_finviz_news(selected, max_news=10)
     
     if news_data:
+        # Analyze sentiment
+        news_data = analyze_news_sentiment(news_data)
+        
         st.caption(f"📊 Showing {len(news_data)} most recent news items")
         
-        for idx, item in enumerate(news_data, 1):
-            with st.container():
-                col1, col2 = st.columns([1, 9])
-                
-                with col1:
-                    st.markdown(f"**{idx}.**")
-                    st.caption(item['Date'])
-                    st.caption(item['Time'])
-                
-                with col2:
-                    # Make title clickable
-                    st.markdown(f"**[{item['Title']}]({item['Link']})**")
-                    st.caption(f"📡 Source: {item['Source']}")
-                
-                if idx < len(news_data):
-                    st.divider()
+        # Create DataFrame for table display
+        news_table_data = []
+        for item in news_data:
+            # Format timestamp
+            timestamp = f"{item.get('Date', 'N/A')} {item.get('Time', 'N/A')}"
+            
+            # Create clickable link
+            title = item.get('Title', 'No title')
+            link = item.get('Link', '#')
+            
+            # Sentiment
+            sentiment_emoji = item.get('sentiment_emoji', '⚪')
+            sentiment_label = item.get('sentiment_label', 'N/A')
+            sentiment_score = item.get('sentiment_score', 0.0)
+            sentiment_display = f"{sentiment_emoji} {sentiment_label} ({sentiment_score:.2f})"
+            
+            news_table_data.append({
+                'Timestamp': timestamp,
+                'Headline': title,
+                'Link': link,
+                'Sentiment': sentiment_display,
+                'Source': item.get('Source', 'Unknown')
+            })
+        
+        # Create DataFrame
+        news_df = pd.DataFrame(news_table_data)
+        
+        # Display as interactive table with clickable links
+        st.markdown("**Click on headlines to read full articles:**")
+        
+        # Create HTML table with clickable links
+        html_table = '<table style="width:100%; border-collapse: collapse;">'
+        html_table += '<tr style="background-color: #f0f2f6; font-weight: bold;">'
+        html_table += '<th style="padding: 10px; text-align: left; border-bottom: 2px solid #ddd;">Time</th>'
+        html_table += '<th style="padding: 10px; text-align: left; border-bottom: 2px solid #ddd;">Headline</th>'
+        html_table += '<th style="padding: 10px; text-align: center; border-bottom: 2px solid #ddd;">Sentiment</th>'
+        html_table += '</tr>'
+        
+        for idx, row in news_df.iterrows():
+            html_table += f'<tr style="border-bottom: 1px solid #ddd;">'
+            html_table += f'<td style="padding: 8px; vertical-align: top; white-space: nowrap;">{row["Timestamp"]}</td>'
+            html_table += f'<td style="padding: 8px;"><a href="{row["Link"]}" target="_blank" style="color: #0066cc; text-decoration: none;">{row["Headline"]}</a><br><small style="color: #666;">📡 {row["Source"]}</small></td>'
+            html_table += f'<td style="padding: 8px; text-align: center; white-space: nowrap;">{row["Sentiment"]}</td>'
+            html_table += '</tr>'
+        
+        html_table += '</table>'
+        
+        # Display HTML table
+        st.markdown(html_table, unsafe_allow_html=True)
+        
+        # Overall sentiment summary
+        if SENTIMENT_AVAILABLE:
+            st.markdown("---")
+            st.markdown("**📊 Overall Sentiment Summary:**")
+            
+            sentiment_scores = [item.get('sentiment_score', 0) for item in news_data]
+            avg_sentiment = sum(sentiment_scores) / len(sentiment_scores)
+            
+            col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+            
+            positive_count = sum(1 for s in sentiment_scores if s >= 0.05)
+            neutral_count = sum(1 for s in sentiment_scores if -0.05 < s < 0.05)
+            negative_count = sum(1 for s in sentiment_scores if s <= -0.05)
+            
+            col_s1.metric("🟢 Positive", f"{positive_count}")
+            col_s2.metric("🟡 Neutral", f"{neutral_count}")
+            col_s3.metric("🔴 Negative", f"{negative_count}")
+            col_s4.metric("Average Score", f"{avg_sentiment:.2f}")
+            
+            # Overall sentiment indicator
+            if avg_sentiment >= 0.05:
+                st.success(f"📈 Overall Positive News Sentiment")
+            elif avg_sentiment <= -0.05:
+                st.error(f"📉 Overall Negative News Sentiment")
+            else:
+                st.info(f"➡️ Overall Neutral News Sentiment")
     else:
         st.info("📭 No recent news available from Finviz at this time")
-        st.caption("This could be due to network issues or the ticker not being covered")
+        st.caption("This could be due to network issues or the ticker not being covered on Finviz")
 
+# ======================== ANALYST RATINGS COLUMN ========================
 with col_ratings:
-    st.subheader("Analyst Ratings")
+    st.subheader("🎯 Analyst Ratings")
     
     with st.spinner("Fetching analyst ratings..."):
         ratings_df = scrape_finviz_analyst_ratings(selected)
@@ -1258,6 +1381,7 @@ with col_ratings:
         )
         
         # Summary statistics
+        st.markdown("---")
         st.markdown("**📊 Recent Consensus:**")
         
         col1, col2 = st.columns(2)
@@ -1292,16 +1416,31 @@ with col_ratings:
                 current_price_val = float(latest['Close'])
                 upside = ((avg_target - current_price_val) / current_price_val) * 100
                 
+                st.markdown("---")
                 st.metric(
-                    "Avg Price Target", 
+                    "📈 Avg Price Target", 
                     f"${avg_target:.2f}",
                     f"{upside:+.1f}%",
                     help=f"Based on {len(price_targets)} analyst(s)"
                 )
     else:
         st.info("📭 No analyst ratings available")
-        st.caption("Some stocks may not have analyst coverage or ratings may not be displayed on Finviz")
-# Rule-Based Recommendation
+        st.caption("Some stocks may not have analyst coverage on Finviz")
+        
+        # Debug information
+        with st.expander("🔍 Troubleshooting - Why no ratings?"):
+            st.write("**Possible reasons:**")
+            st.write(f"• {selected} may not have recent analyst coverage on Finviz")
+            st.write("• Finviz free tier may not show ratings for all stocks")
+            st.write("• Try testing with: AAPL, MSFT, GOOGL, TSLA")
+            st.write("• Finviz might be blocking automated requests")
+            
+            # Test link
+            st.markdown(f"**🔗 [Check {selected} on Finviz.com](https://finviz.com/quote.ashx?t={selected})**")
+            st.caption("Open this link to verify if analyst ratings exist on the website")
+
+# ==================== Rule-Based Recommendation ====================
+
 st.markdown("---")
 st.subheader("🎯 Rule-Based Trading Signals")
 
@@ -1327,7 +1466,8 @@ with col2:
             display_text += f" [w={weight:.2f}]"
         st.write(display_text)
 
-# ML Analysis Section
+# ==================== ML Analysis Section ====================
+
 st.markdown("---")
 st.subheader("🤖 Machine Learning Models Analysis")
 
@@ -1362,7 +1502,8 @@ if ml_button or cache_key in st.session_state["ml_cache"]:
         
         st.info("💡 Ensemble uses simple majority voting across all models")
 
-# Backtest Results
+# ==================== Backtest Results ====================
+
 st.markdown("---")
 st.subheader("📊 Strategy Backtest Performance")
 
@@ -1412,7 +1553,8 @@ with st.expander("📋 View Trade History"):
         trades_df = pd.DataFrame(backtest_results['positions'], columns=['Action', 'Date', 'Price', 'Value/Shares', 'Return/Conf'])
         st.dataframe(trades_df, use_container_width=True)
 
-# Monte Carlo Projections
+# ==================== Monte Carlo Projections ====================
+
 st.markdown("---")
 st.subheader("🎲 Monte Carlo Price Target Projections")
 
@@ -1436,13 +1578,16 @@ mc_df = pd.DataFrame(sim_results)
 st.dataframe(mc_df, use_container_width=True)
 st.info(f"💡 Based on {sim_count:,} simulations with {max_days} day horizon using Student's t-distribution")
 
-# Footer
+# ==================== Footer ====================
+
 st.markdown("---")
 st.subheader("📝 Notes & Disclaimers")
 
 st.write("""
 ### Improvements in v2.2:
 - ✅ **Machine Learning Integration** - Random Forest, XGBoost, ARIMA+GARCH, LSTM, RNN, Monte Carlo
+- ✅ **News Sentiment Analysis** - VADER sentiment on Finviz news headlines with table display
+- ✅ **Analyst Ratings** - Real-time analyst ratings from Finviz with consensus metrics
 - ✅ **Ensemble Recommendations** - Simple majority voting across all models
 - ✅ **Comprehensive Metrics** - Accuracy, Precision, Recall, F1-Score, AUC for each model
 - ✅ **On-the-fly Training** - Models trained on historical data with technical indicators
@@ -1454,40 +1599,18 @@ st.write("""
 - **LSTM & RNN**: Deep learning models capturing temporal patterns in price movements
 - **Monte Carlo Simulation**: Probabilistic approach to estimate price target probabilities
 - **Ensemble Method**: Combines all models using simple majority vote for consensus
-
-### Model Details:
-- **Features**: RSI, MACD, SMA, Bollinger Bands, ATR, ADX, Stochastic, lagged prices/volumes, momentum
-- **Target**: 5-day forward return classification (BUY >2%, SELL <-2%, HOLD otherwise)
-- **Training**: All available historical data (no train/test split for final predictions)
-- **Sequence Length**: 60 days for LSTM/RNN models
+- **News Intelligence**: Real-time news with sentiment analysis (Positive/Neutral/Negative)
+- **Analyst Intelligence**: Analyst ratings, price targets, and consensus data
 
 ### Limitations & Disclaimers:
 - ⚠️ **NOT FINANCIAL ADVICE** - This tool is for educational purposes only
 - ⚠️ Past performance does not guarantee future results
 - ⚠️ ML models can overfit to historical patterns that may not persist
 - ⚠️ Market conditions change - models trained on past data may not predict future well
-- ⚠️ Backtest results may not reflect actual trading due to slippage, market impact
+- ⚠️ Sentiment analysis is based on headlines only, not full article content
+- ⚠️ Analyst ratings availability varies by stock and may not be complete
 - ⚠️ Always do your own research and consult a financial advisor
 - ⚠️ Consider paper trading before using real capital
-- ⚠️ ML training can take 30-60 seconds - be patient!
-
-### Recommended Next Steps:
-1. Compare rule-based vs ML recommendations to understand model behavior
-2. Test different weight configurations for rule-based signals
-3. Monitor ensemble agreement - high disagreement suggests uncertainty
-4. Use ML analysis as one input among many in your decision-making
-5. Paper trade the strategy for at least 3 months before deploying real capital
-6. Consider adding fundamental analysis (earnings, revenue growth, debt ratios)
-7. Implement position sizing and portfolio-level risk management
-8. Add real-time alerts for signal generation
-
-### Technical Notes:
-- **Random Forest**: 100 trees, max depth 10, prevents overfitting
-- **XGBoost**: Learning rate 0.1, 100 estimators, max depth 6
-- **ARIMA**: Order (1,1,1) for returns, 10-day forecast horizon
-- **GARCH**: (1,1) for volatility, combined with ARIMA for confidence
-- **LSTM/RNN**: 2 layers with 50 units each, 20 epochs, dropout 0.2
-- **Monte Carlo**: 1000 simulations with normal distribution for 5-day returns
 """)
 
 st.markdown("---")
