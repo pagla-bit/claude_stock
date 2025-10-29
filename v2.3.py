@@ -1120,7 +1120,7 @@ st.caption("Advanced technical analysis with ML models, multi-source news, and s
 
 # Sidebar Configuration
 st.sidebar.header("⚙️ Configuration")
-group_choice = st.sidebar.radio("Market Cap Group", ["Big Cap (>$10B)", "Medium Cap ($1B–$10B)", "Small Cap (<$1B)"])
+group_choice = st.sidebar.radio("Market Cap Group", ["Big Cap (>$100B)", "Medium Cap ($10B–$100B)", "Small Cap (<$10B)"])
 
 if group_choice.startswith("Big"):
     default_tickers = "AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA"
