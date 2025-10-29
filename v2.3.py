@@ -889,7 +889,16 @@ def run_ml_analysis(df: pd.DataFrame):
         except Exception as e:
             results.append(["Monte Carlo", "Error", str(e), "N/A", "N/A"])
     
-    return results
+    # Filter out invalid results
+    valid_results = []
+    for result in results:
+        if len(result) >= 4:
+            recommendation = result[3]
+            confidence = result[4]
+            if recommendation in ["BUY", "SELL", "HOLD"] and confidence != "N/A":
+                valid_results.append(result)
+    
+    return valid_results if valid_results else None
 
 def calculate_ensemble_recommendation(results):
     """Calculate ensemble recommendation using simple majority vote"""
