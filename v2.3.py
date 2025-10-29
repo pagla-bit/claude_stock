@@ -733,6 +733,83 @@ def monte_carlo_ml_simulation(df: pd.DataFrame, current_price: float, sims: int 
     
     return None, params_str, metrics_str, prediction, confidence
 
+############################ New Monte Carlo price simulation #####################
+
+def monte_carlo_price_simulation(df: pd.DataFrame, current_price: float, sims: int = 5000):
+    """
+    Monte Carlo simulation for price ranges across different timeframes
+    
+    Args:
+        df: Historical price dataframe
+        current_price: Current stock price
+        sims: Number of simulations to run
+    
+    Returns:
+        DataFrame with columns: Timeframe, Lowest Price, Median Price, Highest Price
+    """
+    returns = df['Close'].pct_change().dropna().values
+    
+    if len(returns) < 30:
+        return pd.DataFrame()
+    
+    # Calculate weighted statistics for more recent data
+    weights = np.exp(np.linspace(-2, 0, len(returns)))
+    weights /= weights.sum()
+    mu = np.average(returns, weights=weights)
+    sigma = np.sqrt(np.average((returns - mu)**2, weights=weights))
+    
+    if sigma == 0:
+        timeframes_data = []
+        for name, days in [("3 Days", 3), ("1 Week", 7), ("2 Weeks", 14), 
+                          ("1 Month", 30), ("3 Months", 90), ("6 Months", 180)]:
+            timeframes_data.append({
+                "Timeframe": name,
+                "Lowest Price": f"${current_price:.2f}",
+                "Median Price": f"${current_price:.2f}",
+                "Highest Price": f"${current_price:.2f}"
+            })
+        return pd.DataFrame(timeframes_data)
+    
+    # Define timeframes
+    timeframes = [
+        ("3 Days", 3),
+        ("1 Week", 7),
+        ("2 Weeks", 14),
+        ("1 Month", 30),
+        ("3 Months", 90),
+        ("6 Months", 180)
+    ]
+    
+    simulation_results = []
+    
+    for timeframe_name, days in timeframes:
+        # Generate simulations using Student's t-distribution
+        t_samples = stats.t.rvs(df=5, loc=mu, scale=sigma, size=(sims, days))
+        
+        # Add volatility clustering
+        vol_factor = np.ones((sims, days))
+        for d in range(1, days):
+            vol_factor[:, d] = 0.85 * vol_factor[:, d-1] + 0.15 * (1 + np.abs(t_samples[:, d-1]))
+        t_samples *= vol_factor
+        
+        # Calculate final prices
+        price_paths = current_price * np.cumprod(1 + t_samples, axis=1)
+        final_prices = price_paths[:, -1]
+        
+        # Calculate percentiles
+        lowest_price = np.percentile(final_prices, 5)   # Worst 5%
+        median_price = np.percentile(final_prices, 50)  # Median
+        highest_price = np.percentile(final_prices, 95) # Best 5%
+        
+        simulation_results.append({
+            "Timeframe": timeframe_name,
+            "Lowest Price": f"${lowest_price:.2f}",
+            "Median Price": f"${median_price:.2f}",
+            "Highest Price": f"${highest_price:.2f}"
+        })
+    
+    return pd.DataFrame(simulation_results)
+
 # -------------------- Run All ML Models --------------------
 
 def run_ml_analysis(df: pd.DataFrame):
@@ -1570,6 +1647,22 @@ with st.spinner("Running Monte Carlo simulations..."):
 mc_df = pd.DataFrame(sim_results)
 st.dataframe(mc_df, use_container_width=True)
 st.info(f"💡 Based on {sim_count:,} simulations with {max_days} day horizon using Student's t-distribution")
+################ New Lines #################
+# ==================== NEW: Monte Carlo Price Simulation ====================
+
+st.markdown("---")
+st.subheader("🎲 Monte Carlo Price Simulation")
+
+with st.spinner("Running price simulations across timeframes..."):
+    mc_price_sim = monte_carlo_price_simulation(df, current_price, sims=sim_count)
+
+if not mc_price_sim.empty:
+    st.dataframe(mc_price_sim, use_container_width=True, hide_index=True)
+    
+    st.info(f"💡 Based on {sim_count:,} simulations using Student's t-distribution with volatility clustering. "
+            f"Shows 5th percentile (worst case), median (most likely), and 95th percentile (best case) prices.")
+else:
+    st.warning("⚠️ Insufficient data for price simulation")
 
 # ==================== Footer ====================
 
