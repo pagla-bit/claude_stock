@@ -261,6 +261,82 @@ def scrape_finviz_analyst_ratings(ticker: str):
     except Exception as e:
         st.warning(f"Could not fetch analyst ratings for {ticker}: {str(e)[:100]}")
         return None
+
+with col_news:
+    st.subheader("Latest News from Finviz")
+    
+    # Sentiment filter (if available)
+    if SENTIMENT_AVAILABLE:
+        sentiment_filter = st.multiselect(
+            "Filter by sentiment",
+            options=['Positive', 'Neutral', 'Negative'],
+            default=['Positive', 'Neutral', 'Negative'],
+            key="sentiment_filter"
+        )
+    
+    with st.spinner("Fetching latest news..."):
+        news_data = scrape_finviz_news(selected, max_news=10)
+    
+    if news_data:
+        # Analyze sentiment
+        news_data = analyze_news_sentiment(news_data)
+        
+        # Apply filter
+        if SENTIMENT_AVAILABLE and sentiment_filter:
+            filtered_news = [item for item in news_data 
+                           if item.get('sentiment_label', 'Neutral') in sentiment_filter]
+        else:
+            filtered_news = news_data
+        
+        st.caption(f"📊 Showing {len(filtered_news)} news items")
+        
+        # Overall sentiment metrics
+        if SENTIMENT_AVAILABLE and 'sentiment_score' in news_data[0]:
+            sentiment_scores = [item.get('sentiment_score', 0) for item in news_data]
+            avg_sentiment = sum(sentiment_scores) / len(sentiment_scores)
+            
+            col_s1, col_s2, col_s3 = st.columns(3)
+            positive_count = sum(1 for s in sentiment_scores if s >= 0.05)
+            neutral_count = sum(1 for s in sentiment_scores if -0.05 < s < 0.05)
+            negative_count = sum(1 for s in sentiment_scores if s <= -0.05)
+            
+            col_s1.metric("🟢 Positive", f"{positive_count}/{len(news_data)}")
+            col_s2.metric("🟡 Neutral", f"{neutral_count}/{len(news_data)}")
+            col_s3.metric("🔴 Negative", f"{negative_count}/{len(news_data)}")
+            
+            if avg_sentiment >= 0.05:
+                st.success(f"📈 Overall Positive Sentiment (Score: {avg_sentiment:.2f})")
+            elif avg_sentiment <= -0.05:
+                st.error(f"📉 Overall Negative Sentiment (Score: {avg_sentiment:.2f})")
+            else:
+                st.info(f"➡️ Overall Neutral Sentiment (Score: {avg_sentiment:.2f})")
+            
+            st.markdown("---")
+        
+        # Display filtered news
+        for idx, item in enumerate(filtered_news, 1):
+            with st.container():
+                col1, col2 = st.columns([1, 9])
+                
+                with col1:
+                    emoji = item.get('sentiment_emoji', '⚪')
+                    st.markdown(f"**{idx}. {emoji}**")
+                    st.caption(item['Date'])
+                    st.caption(item['Time'])
+                
+                with col2:
+                    st.markdown(f"**[{item['Title']}]({item['Link']})**")
+                    
+                    sentiment_info = ""
+                    if 'sentiment_label' in item:
+                        sentiment_info = f" | {item['sentiment_label']} ({item['sentiment_score']:.2f})"
+                    
+                    st.caption(f"📡 {item['Source']}{sentiment_info}")
+                
+                if idx < len(filtered_news):
+                    st.divider()
+    else:
+        st.info("📭 No recent news available")
 # -------------------- Indicator Calculations --------------------
 
 def calc_indicators(df: pd.DataFrame,
@@ -1198,6 +1274,17 @@ st.plotly_chart(fig, use_container_width=True)
 
 st.markdown("---")
 st.header(f"📰 News & Analyst Intelligence for {selected}")
+# Right after: st.header(f"📰 News & Analyst Intelligence for {selected}")
+
+col_header, col_button = st.columns([4, 1])
+with col_header:
+    st.header(f"📰 News & Analyst Intelligence for {selected}")
+with col_button:
+    if st.button("🔄 Refresh", key="refresh_finviz", type="secondary"):
+        scrape_finviz_news.clear()
+        scrape_finviz_analyst_ratings.clear()
+        st.success("✅ Refreshed!")
+        st.rerun()
 
 col_news, col_ratings = st.columns([3, 2])
 
