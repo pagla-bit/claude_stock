@@ -1,12 +1,5 @@
 """
-Enhanced Streamlit Stock Dashboard v2.4 - IMPROVED VERSION
-Key improvements:
-- Enhanced error handling and robustness
-- Better memory management and performance
-- Modular code structure
-- Improved user experience
-- Simplified market cap groups (single ticker input)
-- Advanced caching and retry mechanisms
+Enhanced Streamlit Stock Dashboard v2.4 - COMPLETE IMPLEMENTATION
 """
 # ==================== IMPORTS ====================
 import logging
@@ -148,18 +141,6 @@ def retry_with_backoff(func, max_retries: int = 3, base_delay: float = 1):
             logger.warning(f"Attempt {attempt + 1} failed for {func.__name__}. Retrying in {delay}s: {str(e)}")
             time.sleep(delay)
 
-def handle_graceful_degradation(primary_func, fallback_func, error_message: str):
-    """Execute primary function with fallback on failure"""
-    try:
-        return primary_func()
-    except Exception as e:
-        logger.warning(f"{error_message}: {str(e)}")
-        try:
-            return fallback_func()
-        except Exception as fallback_e:
-            logger.error(f"Fallback also failed: {str(fallback_e)}")
-            raise DashboardError(f"Both primary and fallback failed: {str(fallback_e)}")
-
 # ==================== MEMORY MANAGEMENT ====================
 class MemoryManager:
     """Manage memory usage and cleanup"""
@@ -179,16 +160,6 @@ class MemoryManager:
         except ImportError:
             pass
         gc.collect()
-    
-    @staticmethod
-    def get_memory_usage():
-        """Get current memory usage (simplified)"""
-        try:
-            import psutil
-            process = psutil.Process()
-            return process.memory_info().rss / 1024 / 1024  # MB
-        except ImportError:
-            return "N/A"
 
 # ==================== DATA FETCHING MODULE ====================
 class DataFetcher:
@@ -239,7 +210,7 @@ class DataFetcher:
             except Exception as e:
                 raise DataFetchError(f"Failed to fetch data for {ticker}: {str(e)}")
         
-        return retry_with_backoff(fetch_data, max_retries=self.config.MAX_RETRIES)
+        return retry_with_backoff(fetch_data, max_retries=_self.config.MAX_RETRIES)
     
     @st.cache_data(ttl=3600)
     def get_spy_data(_self) -> pd.DataFrame:
@@ -285,267 +256,6 @@ class DataFetcher:
             return None, "N/A", "N/A"
         
         return retry_with_backoff(fetch_fgi, max_retries=self.config.MAX_RETRIES)
-
-# ==================== NEWS FETCHING MODULE ====================
-class NewsFetcher:
-    """Handle news fetching from multiple sources"""
-    
-    def __init__(self, config: DashboardConfig):
-        self.config = config
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
-    
-    @st.cache_data(ttl=1800)
-    def fetch_finviz_news(_self, ticker: str) -> List[Dict]:
-        """Fetch news from Finviz with error handling"""
-        if not BEAUTIFULSOUP_AVAILABLE:
-            logger.warning("BeautifulSoup not available for Finviz news")
-            return []
-        
-        def fetch():
-            try:
-                url = f"https://finviz.com/quote.ashx?t={ticker.upper()}"
-                response = _self.session.get(url, timeout=_self.config.REQUEST_TIMEOUT)
-                response.raise_for_status()
-                
-                soup = BeautifulSoup(response.content, 'html.parser')
-                news_table = soup.find('table', {'id': 'news-table'})
-                
-                if not news_table:
-                    return []
-                
-                news_list = []
-                current_date = None
-                
-                for row in news_table.find_all('tr')[:_self.config.MAX_NEWS_ITEMS]:
-                    td_timestamp = row.find('td', {'align': 'right', 'width': '130'})
-                    td_content = row.find('td', {'align': 'left'})
-                    
-                    if not td_timestamp or not td_content:
-                        continue
-                    
-                    timestamp_text = td_timestamp.get_text().strip()
-                    timestamp_parts = timestamp_text.split()
-                    
-                    if len(timestamp_parts) == 2:
-                        current_date = timestamp_parts[0]
-                        time_str = timestamp_parts[1]
-                    else:
-                        time_str = timestamp_parts[0]
-                    
-                    link_tag = td_content.find('a')
-                    if link_tag:
-                        title = link_tag.get_text().strip()
-                        link = link_tag.get('href', '')
-                        
-                        source_span = td_content.find('span', {'class': 'news-link-right'})
-                        source = source_span.get_text().strip() if source_span else 'Finviz'
-                        
-                        if link and not link.startswith('http'):
-                            link = 'https://finviz.com/' + link
-                        
-                        news_list.append({
-                            'Date': current_date,
-                            'Time': time_str,
-                            'Source': source,
-                            'Title': title,
-                            'Link': link
-                        })
-                
-                return news_list
-                
-            except Exception as e:
-                logger.error(f"Finviz news fetch failed for {ticker}: {str(e)}")
-                raise
-        
-        return handle_graceful_degradation(
-            fetch,
-            lambda: [],
-            f"Finviz news fetch failed for {ticker}"
-        )
-    
-    @st.cache_data(ttl=1800)
-    def fetch_google_news(_self, ticker: str) -> List[Dict]:
-        """Fetch news from Google News RSS"""
-        if not FEEDPARSER_AVAILABLE:
-            logger.warning("feedparser not available for Google News")
-            return []
-        
-        def fetch():
-            try:
-                query = f"{ticker} stock"
-                rss_url = f"https://news.google.com/rss/search?q={query.replace(' ', '+')}"
-                
-                response = _self.session.get(rss_url, timeout=_self.config.REQUEST_TIMEOUT)
-                response.raise_for_status()
-                
-                feed = feedparser.parse(response.content)
-                
-                if not feed.entries:
-                    return []
-                
-                news_list = []
-                
-                for entry in feed.entries[:_self.config.MAX_NEWS_ITEMS]:
-                    published = entry.get('published_parsed', None)
-                    if published:
-                        dt = datetime(*published[:6])
-                        date_str = dt.strftime('%b-%d-%y')
-                        time_str = dt.strftime('%I:%M%p')
-                    else:
-                        date_str = 'Today'
-                        time_str = 'N/A'
-                    
-                    title = entry.get('title', 'No title')
-                    link = entry.get('link', '#')
-                    
-                    source = 'Google News'
-                    if ' - ' in title:
-                        parts = title.rsplit(' - ', 1)
-                        if len(parts) == 2:
-                            title = parts[0]
-                            source = parts[1]
-                    
-                    news_list.append({
-                        'Date': date_str,
-                        'Time': time_str,
-                        'Source': source,
-                        'Title': title,
-                        'Link': link
-                    })
-                
-                return news_list
-                
-            except Exception as e:
-                logger.error(f"Google News fetch failed for {ticker}: {str(e)}")
-                raise
-        
-        return handle_graceful_degradation(
-            fetch,
-            lambda: [],
-            f"Google News fetch failed for {ticker}"
-        )
-    
-    def get_news(self, ticker: str, source: str) -> List[Dict]:
-        """Get news from specified source"""
-        if source == "Finviz":
-            return self.fetch_finviz_news(ticker)
-        elif source == "Google News":
-            return self.fetch_google_news(ticker)
-        else:
-            return []
-
-# ==================== SENTIMENT ANALYSIS MODULE ====================
-class SentimentAnalyzer:
-    """Handle sentiment analysis with FinBERT"""
-    
-    def __init__(self):
-        self.model = None
-        self.tokenizer = None
-        self._model_loaded = False
-    
-    def load_model(self):
-        """Load FinBERT model with error handling"""
-        if self._model_loaded:
-            return self.tokenizer, self.model
-        
-        if not FINBERT_AVAILABLE:
-            logger.warning("FinBERT dependencies not available")
-            return None, None
-        
-        try:
-            model_name = "ProsusAI/finbert"
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
-            self.model.eval()
-            self._model_loaded = True
-            logger.info("FinBERT model loaded successfully")
-            return self.tokenizer, self.model
-        except Exception as e:
-            logger.error(f"Failed to load FinBERT model: {str(e)}")
-            return None, None
-    
-    def analyze_sentiment(self, text: str) -> Tuple[str, float]:
-        """Analyze sentiment of text using FinBERT"""
-        tokenizer, model = self.load_model()
-        if tokenizer is None or model is None:
-            return "N/A", 0.0
-        
-        try:
-            inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512, padding=True)
-            
-            with torch.no_grad():
-                outputs = model(**inputs)
-                predictions = torch.nn.functional.softmax(outputs.logits, dim=-1)
-            
-            negative = predictions[0][0].item()
-            neutral = predictions[0][1].item()
-            positive = predictions[0][2].item()
-            
-            compound = positive - negative
-            
-            if positive > negative and positive > neutral:
-                label = "Positive"
-            elif negative > positive and negative > neutral:
-                label = "Negative"
-            else:
-                label = "Neutral"
-            
-            return label, compound
-            
-        except Exception as e:
-            logger.error(f"Sentiment analysis failed: {str(e)}")
-            return "N/A", 0.0
-    
-    def analyze_news_batch(self, news_data: List[Dict]) -> List[Dict]:
-        """Analyze sentiment for a batch of news items"""
-        if not news_data:
-            return []
-        
-        tokenizer, model = self.load_model()
-        if tokenizer is None or model is None:
-            # Mark all as neutral if model not available
-            for item in news_data:
-                item.update({
-                    'sentiment_label': 'N/A',
-                    'sentiment_score': 0.0,
-                    'sentiment_emoji': '⚪',
-                    'sentiment_color': 'gray',
-                    'bert_available': False
-                })
-            return news_data
-        
-        # Analyze each news item
-        for item in news_data:
-            title = item['Title']
-            label, score = self.analyze_sentiment(title)
-            
-            if score >= 0.05:
-                final_label = 'Positive'
-                final_emoji = '🟢'
-                final_color = 'green'
-            elif score <= -0.05:
-                final_label = 'Negative'
-                final_emoji = '🔴'
-                final_color = 'red'
-            else:
-                final_label = 'Neutral'
-                final_emoji = '🟡'
-                final_color = 'orange'
-            
-            item.update({
-                'sentiment_label': final_label,
-                'sentiment_score': score,
-                'sentiment_emoji': final_emoji,
-                'sentiment_color': final_color,
-                'bert_score': score,
-                'bert_label': label,
-                'bert_available': True
-            })
-        
-        return news_data
 
 # ==================== TECHNICAL INDICATORS MODULE ====================
 class TechnicalIndicators:
@@ -642,89 +352,387 @@ class TechnicalIndicators:
         
         return True, validation_results
 
-# ==================== ML MODELS MODULE ====================
-class MLModels:
-    """Handle all ML model training and prediction"""
+    def rule_based_signal_v2(self, df: pd.DataFrame, rsi_oversold=30, rsi_overbought=70, weights=None):
+        """Enhanced signal generation with proper modifiers"""
+        if weights is None:
+            weights = self.config.DEFAULT_WEIGHTS
+        
+        if len(df) < 3:
+            return "HOLD", [], 0.0, {'buy': 0, 'sell': 0}
+        
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
+        
+        buy_score = 0.0
+        sell_score = 0.0
+        trend_multiplier = 1.0
+        volume_multiplier = 1.0
+        signals = []
+        
+        # RSI
+        if not np.isnan(latest['RSI']):
+            if latest['RSI'] < rsi_oversold:
+                buy_score += weights['RSI']
+                signals.append(("RSI oversold", "BUY", weights['RSI'], f"RSI={latest['RSI']:.1f}"))
+            elif latest['RSI'] > rsi_overbought:
+                sell_score += weights['RSI']
+                signals.append(("RSI overbought", "SELL", weights['RSI'], f"RSI={latest['RSI']:.1f}"))
+        
+        # MACD
+        if not np.isnan(latest['MACD']) and not np.isnan(prev['MACD']):
+            if (prev['MACD'] < prev['MACD_signal']) and (latest['MACD'] > latest['MACD_signal']):
+                buy_score += weights['MACD']
+                signals.append(("MACD bullish crossover", "BUY", weights['MACD'], ""))
+            elif (prev['MACD'] > prev['MACD_signal']) and (latest['MACD'] < latest['MACD_signal']):
+                sell_score += weights['MACD']
+                signals.append(("MACD bearish crossover", "SELL", weights['MACD'], ""))
+        
+        # SMA
+        if not np.isnan(latest['SMA_long']):
+            if latest['Close'] > latest['SMA_long']:
+                buy_score += weights['SMA']
+                signals.append(("Price above long SMA", "BUY", weights['SMA'], ""))
+            else:
+                sell_score += weights['SMA']
+                signals.append(("Price below long SMA", "SELL", weights['SMA'], ""))
+        
+        # Bollinger Bands
+        if not np.isnan(latest['BB_lower']) and not np.isnan(latest['BB_upper']):
+            if latest['Close'] < latest['BB_lower']:
+                buy_score += weights['BB']
+                signals.append(("Price below BB lower", "BUY", weights['BB'], ""))
+            elif latest['Close'] > latest['BB_upper']:
+                sell_score += weights['BB']
+                signals.append(("Price above BB upper", "SELL", weights['BB'], ""))
+        
+        # Stochastic
+        if 'Stoch_K' in latest and not np.isnan(latest['Stoch_K']):
+            if latest['Stoch_K'] < 20:
+                buy_score += weights.get('Stoch', 0.8)
+                signals.append(("Stochastic oversold", "BUY", weights.get('Stoch', 0.8), ""))
+            elif latest['Stoch_K'] > 80:
+                sell_score += weights.get('Stoch', 0.8)
+                signals.append(("Stochastic overbought", "SELL", weights.get('Stoch', 0.8), ""))
+        
+        # Volume
+        vol_avg20 = df['Volume'].rolling(20).mean().iloc[-1] if len(df) >= 20 else df['Volume'].mean()
+        if vol_avg20 > 0 and latest['Volume'] > vol_avg20 * 1.5:
+            volume_multiplier = 1.3
+            signals.append(("High volume", "CONFIRM", 0, ""))
+        
+        # ADX
+        if not np.isnan(latest['ADX']):
+            if latest['ADX'] > 25:
+                trend_multiplier = 1.0 + min((latest['ADX'] - 25) / 100, 0.5)
+                signals.append(("Strong trend", "AMPLIFY", 0, f"ADX={latest['ADX']:.1f}"))
+            elif latest['ADX'] < 20:
+                trend_multiplier = 0.6
+                signals.append(("Weak trend", "DAMPEN", 0, f"ADX={latest['ADX']:.1f}"))
+        
+        buy_score = buy_score * trend_multiplier * volume_multiplier
+        sell_score = sell_score * trend_multiplier * volume_multiplier
+        
+        total_score = buy_score + sell_score
+        confidence = ((buy_score - sell_score) / total_score * 100) if total_score > 0 else 0.0
+        
+        net_score = buy_score - sell_score
+        strong_threshold = max(weights.values()) * 2.5
+        
+        if net_score > strong_threshold:
+            recommendation = "STRONG BUY"
+        elif net_score > 0.5:
+            recommendation = "BUY"
+        elif net_score < -strong_threshold:
+            recommendation = "STRONG SELL"
+        elif net_score < -0.5:
+            recommendation = "SELL"
+        else:
+            recommendation = "HOLD"
+        
+        raw_scores = {'buy': buy_score, 'sell': sell_score, 'net': net_score}
+        return recommendation, signals, confidence, raw_scores
+
+    def calculate_risk_metrics(self, df: pd.DataFrame, risk_free_rate: float = 0.04):
+        """Calculate comprehensive risk metrics"""
+        returns = df['Close'].pct_change().dropna()
+        if len(returns) < 2:
+            return None
+        
+        annual_return = (df['Close'].iloc[-1] / df['Close'].iloc[0]) ** (252/len(df)) - 1
+        volatility = returns.std() * np.sqrt(252)
+        excess_returns = returns - risk_free_rate/252
+        sharpe = np.sqrt(252) * excess_returns.mean() / returns.std() if returns.std() > 0 else 0
+        downside = returns[returns < 0]
+        sortino = np.sqrt(252) * excess_returns.mean() / downside.std() if len(downside) > 0 and downside.std() > 0 else 0
+        cumulative = (1 + returns).cumprod()
+        running_max = cumulative.expanding().max()
+        drawdown = (cumulative - running_max) / running_max
+        max_dd = drawdown.min()
+        calmar = annual_return / abs(max_dd) if max_dd != 0 else 0
+        var_95 = returns.quantile(0.05)
+        cvar_95 = returns[returns <= var_95].mean()
+        
+        return {
+            'annual_return': annual_return,
+            'volatility': volatility,
+            'sharpe': sharpe,
+            'sortino': sortino,
+            'max_drawdown': max_dd,
+            'calmar': calmar,
+            'var_95': var_95,
+            'cvar_95': cvar_95
+        }
+
+# ==================== NEWS FETCHING MODULE ====================
+class NewsFetcher:
+    """Handle news fetching from multiple sources"""
     
     def __init__(self, config: DashboardConfig):
         self.config = config
-        self.models = {}
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
     
-    def prepare_features(self, df: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], List[str], Optional[np.ndarray]]:
-        """Prepare features for ML models with validation"""
+    @st.cache_data(ttl=1800)
+    def fetch_finviz_news(_self, ticker: str) -> List[Dict]:
+        """Fetch news from Finviz with error handling"""
+        if not BEAUTIFULSOUP_AVAILABLE:
+            logger.warning("BeautifulSoup not available for Finviz news")
+            return []
+        
         try:
-            df = df.copy()
+            url = f"https://finviz.com/quote.ashx?t={ticker.upper()}"
+            response = _self.session.get(url, timeout=_self.config.REQUEST_TIMEOUT)
+            response.raise_for_status()
             
-            # Calculate returns for labeling
-            df['Returns_5d'] = df['Close'].pct_change(5).shift(-5)
+            soup = BeautifulSoup(response.content, 'html.parser')
+            news_table = soup.find('table', {'id': 'news-table'})
             
-            # Create labels: BUY (1), HOLD (0), SELL (-1)
-            df['Label'] = 0
-            df.loc[df['Returns_5d'] > 0.02, 'Label'] = 1
-            df.loc[df['Returns_5d'] < -0.02, 'Label'] = -1
+            if not news_table:
+                return []
             
-            # Features from indicators
-            feature_cols = ['RSI', 'MACD', 'MACD_signal', 'MACD_hist', 
-                           'SMA_short', 'SMA_long', 'BB_upper', 'BB_lower', 'BB_width',
-                           'ATR', 'ATR_pct', 'ADX', 'Stoch_K', 'Stoch_D']
+            news_list = []
+            current_date = None
             
-            # Add lagged features
-            for col in ['Close', 'Volume']:
-                for lag in [1, 5, 10]:
-                    df[f'{col}_lag_{lag}'] = df[col].shift(lag)
-                    feature_cols.append(f'{col}_lag_{lag}')
+            for row in news_table.find_all('tr')[:_self.config.MAX_NEWS_ITEMS]:
+                td_timestamp = row.find('td', {'align': 'right', 'width': '130'})
+                td_content = row.find('td', {'align': 'left'})
+                
+                if not td_timestamp or not td_content:
+                    continue
+                
+                timestamp_text = td_timestamp.get_text().strip()
+                timestamp_parts = timestamp_text.split()
+                
+                if len(timestamp_parts) == 2:
+                    current_date = timestamp_parts[0]
+                    time_str = timestamp_parts[1]
+                else:
+                    time_str = timestamp_parts[0]
+                
+                link_tag = td_content.find('a')
+                if link_tag:
+                    title = link_tag.get_text().strip()
+                    link = link_tag.get('href', '')
+                    
+                    source_span = td_content.find('span', {'class': 'news-link-right'})
+                    source = source_span.get_text().strip() if source_span else 'Finviz'
+                    
+                    if link and not link.startswith('http'):
+                        link = 'https://finviz.com/' + link
+                    
+                    news_list.append({
+                        'Date': current_date,
+                        'Time': time_str,
+                        'Source': source,
+                        'Title': title,
+                        'Link': link
+                    })
             
-            # Add momentum features
-            df['Momentum_5'] = df['Close'].pct_change(5)
-            df['Momentum_10'] = df['Close'].pct_change(10)
-            feature_cols.extend(['Momentum_5', 'Momentum_10'])
-            
-            # Drop NaN rows
-            df = df.dropna()
-            
-            if len(df) < self.config.ML_LOOKBACK + 10:
-                logger.warning("Insufficient data for ML features")
-                return None, None, None, None
-            
-            X = df[feature_cols].values
-            y = df['Label'].values
-            
-            return X, y, feature_cols, df['Returns_5d'].values
+            return news_list
             
         except Exception as e:
-            logger.error(f"Feature preparation failed: {str(e)}")
-            return None, None, None, None
+            logger.error(f"Finviz news fetch failed for {ticker}: {str(e)}")
+            return []
     
-    def train_random_forest(self, X: np.ndarray, y: np.ndarray) -> Tuple[Any, str, str, int, np.ndarray]:
-        """Train Random Forest Classifier"""
+    @st.cache_data(ttl=1800)
+    def fetch_google_news(_self, ticker: str) -> List[Dict]:
+        """Fetch news from Google News RSS"""
+        if not FEEDPARSER_AVAILABLE:
+            logger.warning("feedparser not available for Google News")
+            return []
+        
         try:
-            model = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1)
-            model.fit(X, y)
+            query = f"{ticker} stock"
+            rss_url = f"https://news.google.com/rss/search?q={query.replace(' ', '+')}"
             
-            y_pred = model.predict(X)
-            y_pred_proba = model.predict_proba(X)
+            response = _self.session.get(rss_url, timeout=_self.config.REQUEST_TIMEOUT)
+            response.raise_for_status()
             
-            accuracy = accuracy_score(y, y_pred)
-            precision = precision_score(y, y_pred, average='weighted', zero_division=0)
-            recall = recall_score(y, y_pred, average='weighted', zero_division=0)
-            f1 = f1_score(y, y_pred, average='weighted', zero_division=0)
+            feed = feedparser.parse(response.content)
             
-            try:
-                auc = roc_auc_score(y, y_pred_proba, multi_class='ovr', average='weighted')
-            except:
-                auc = 0.0
+            if not feed.entries:
+                return []
             
-            params_str = "n_estimators=100, max_depth=10"
-            metrics_str = f"Acc:{accuracy:.2%} Prec:{precision:.2%} Rec:{recall:.2%} F1:{f1:.2%} AUC:{auc:.2%}"
+            news_list = []
             
-            return model, params_str, metrics_str, y_pred[-1], y_pred_proba[-1]
+            for entry in feed.entries[:_self.config.MAX_NEWS_ITEMS]:
+                published = entry.get('published_parsed', None)
+                if published:
+                    dt = datetime(*published[:6])
+                    date_str = dt.strftime('%b-%d-%y')
+                    time_str = dt.strftime('%I:%M%p')
+                else:
+                    date_str = 'Today'
+                    time_str = 'N/A'
+                
+                title = entry.get('title', 'No title')
+                link = entry.get('link', '#')
+                
+                source = 'Google News'
+                if ' - ' in title:
+                    parts = title.rsplit(' - ', 1)
+                    if len(parts) == 2:
+                        title = parts[0]
+                        source = parts[1]
+                
+                news_list.append({
+                    'Date': date_str,
+                    'Time': time_str,
+                    'Source': source,
+                    'Title': title,
+                    'Link': link
+                })
+            
+            return news_list
             
         except Exception as e:
-            logger.error(f"Random Forest training failed: {str(e)}")
-            raise MLTrainingError(f"Random Forest training failed: {str(e)}")
+            logger.error(f"Google News fetch failed for {ticker}: {str(e)}")
+            return []
     
-    # Other ML methods (XGBoost, ARIMA, LSTM, RNN, Monte Carlo) would be implemented similarly
-    # ... (truncated for brevity, but all would include proper error handling)
+    def get_news(self, ticker: str, source: str) -> List[Dict]:
+        """Get news from specified source"""
+        if source == "Finviz":
+            return self.fetch_finviz_news(ticker)
+        elif source == "Google News":
+            return self.fetch_google_news(ticker)
+        else:
+            return []
+
+# ==================== SENTIMENT ANALYSIS MODULE ====================
+class SentimentAnalyzer:
+    """Handle sentiment analysis with FinBERT"""
+    
+    def __init__(self):
+        self.model = None
+        self.tokenizer = None
+        self._model_loaded = False
+    
+    def load_model(self):
+        """Load FinBERT model with error handling"""
+        if self._model_loaded:
+            return self.tokenizer, self.model
+        
+        if not FINBERT_AVAILABLE:
+            logger.warning("FinBERT dependencies not available")
+            return None, None
+        
+        try:
+            model_name = "ProsusAI/finbert"
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
+            self.model.eval()
+            self._model_loaded = True
+            logger.info("FinBERT model loaded successfully")
+            return self.tokenizer, self.model
+        except Exception as e:
+            logger.error(f"Failed to load FinBERT model: {str(e)}")
+            return None, None
+    
+    def analyze_sentiment(self, text: str) -> Tuple[str, float]:
+        """Analyze sentiment of text using FinBERT"""
+        tokenizer, model = self.load_model()
+        if tokenizer is None or model is None:
+            return "N/A", 0.0
+        
+        try:
+            inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512, padding=True)
+            
+            with torch.no_grad():
+                outputs = model(**inputs)
+                predictions = torch.nn.functional.softmax(outputs.logits, dim=-1)
+            
+            negative = predictions[0][0].item()
+            neutral = predictions[0][1].item()
+            positive = predictions[0][2].item()
+            
+            compound = positive - negative
+            
+            if positive > negative and positive > neutral:
+                label = "Positive"
+            elif negative > positive and negative > neutral:
+                label = "Negative"
+            else:
+                label = "Neutral"
+            
+            return label, compound
+            
+        except Exception as e:
+            logger.error(f"Sentiment analysis failed: {str(e)}")
+            return "N/A", 0.0
+    
+    def analyze_news_batch(self, news_data: List[Dict], use_bert: bool = True) -> List[Dict]:
+        """Analyze sentiment for a batch of news items"""
+        if not news_data:
+            return []
+        
+        if use_bert:
+            tokenizer, model = self.load_model()
+            bert_available = tokenizer is not None and model is not None
+        else:
+            bert_available = False
+        
+        # Analyze each news item
+        for item in news_data:
+            title = item['Title']
+            
+            if bert_available and use_bert:
+                label, score = self.analyze_sentiment(title)
+                
+                if score >= 0.05:
+                    final_label = 'Positive'
+                    final_emoji = '🟢'
+                    final_color = 'green'
+                elif score <= -0.05:
+                    final_label = 'Negative'
+                    final_emoji = '🔴'
+                    final_color = 'red'
+                else:
+                    final_label = 'Neutral'
+                    final_emoji = '🟡'
+                    final_color = 'orange'
+                
+                item.update({
+                    'sentiment_label': final_label,
+                    'sentiment_score': score,
+                    'sentiment_emoji': final_emoji,
+                    'sentiment_color': final_color,
+                    'bert_score': score,
+                    'bert_label': label,
+                    'bert_available': True
+                })
+            else:
+                # Default to neutral if FinBERT not available or not used
+                item.update({
+                    'sentiment_label': 'N/A',
+                    'sentiment_score': 0.0,
+                    'sentiment_emoji': '⚪',
+                    'sentiment_color': 'gray',
+                    'bert_available': False
+                })
+        
+        return news_data
 
 # ==================== MAIN DASHBOARD CLASS ====================
 class EnhancedStockDashboard:
@@ -736,14 +744,11 @@ class EnhancedStockDashboard:
         self.news_fetcher = NewsFetcher(self.config)
         self.sentiment_analyzer = SentimentAnalyzer()
         self.technical_indicators = TechnicalIndicators(self.config)
-        self.ml_models = MLModels(self.config)
         self.memory_manager = MemoryManager()
         
         # Initialize session state
         if "data_cache" not in st.session_state:
             st.session_state["data_cache"] = {}
-        if "ml_cache" not in st.session_state:
-            st.session_state["ml_cache"] = {}
         if "news_cache" not in st.session_state:
             st.session_state["news_cache"] = {}
     
@@ -796,14 +801,6 @@ class EnhancedStockDashboard:
             for key, default in self.config.DEFAULT_WEIGHTS.items():
                 weights[key] = st.slider(f"{key} weight", 0.0, 5.0, default, 0.1)
         
-        # Simulation settings
-        st.sidebar.subheader("🎲 Simulation Settings")
-        sim_count = st.sidebar.select_slider(
-            "Simulation count", 
-            options=[500, 1000, 2500, 5000, 10000], 
-            value=self.config.MONTE_CARLO_SIMS
-        )
-        
         st.sidebar.markdown("---")
         refresh_btn = st.sidebar.button("🔄 Refresh All Data", type="primary")
         
@@ -818,11 +815,10 @@ class EnhancedStockDashboard:
                 'overbought': rsi_overbought
             },
             'weights': weights,
-            'sim_count': sim_count,
             'refresh': refresh_btn
         }
     
-    def render_market_overview(self):
+    def render_market_overview(self, tickers: List[str]):
         """Render market overview section"""
         try:
             st.markdown("---")
@@ -853,36 +849,215 @@ class EnhancedStockDashboard:
             
             with col3:
                 st.subheader("📍 Select Stock")
-                # This will be populated after tickers are processed
+                if tickers:
+                    selected = st.selectbox(
+                        "Choose ticker to analyze", 
+                        options=tickers, 
+                        label_visibility="collapsed"
+                    )
+                    return selected
+                else:
+                    st.warning("Please enter tickers in the sidebar")
+                    return None
             
         except Exception as e:
             logger.error(f"Market overview rendering failed: {str(e)}")
             st.error("❌ Failed to load market overview data")
+            return None
+    
+    def render_key_metrics(self, df: pd.DataFrame, info: Dict, spy_data: pd.DataFrame):
+        """Render key stock metrics"""
+        st.subheader("💰 Key Metrics")
+        
+        latest = df.iloc[-1]
+        m1, m2, m3, m4, m5 = st.columns(5)
+
+        price_str = f"${latest['Close']:.2f}"
+        vol_str = f"{latest['Volume'] / 1_000_000:.2f}M"
+        market_cap = info.get("marketCap")
+        mc_str = f"${market_cap/1_000_000_000:.2f}B" if market_cap else "N/A"
+        pe_val = info.get("forwardPE") or info.get("trailingPE") or "N/A"
+        pe_str = f"{pe_val:.1f}x" if isinstance(pe_val, (int, float)) else pe_val
+
+        m1.metric("Price", price_str)
+        m2.metric("Volume", vol_str)
+        m3.metric("Market Cap", mc_str)
+        m4.metric("Fwd P/E", pe_str)
+
+        # Calculate correlation with SPY
+        corr = 0.0
+        if not spy_data.empty:
+            try:
+                min_len = min(len(spy_data), len(df))
+                corr = df['Close'].iloc[-min_len:].corr(spy_data['Close'].iloc[-min_len:])
+                corr = 0.0 if np.isnan(corr) else corr
+            except:
+                corr = 0.0
+        m5.metric("SPY Correlation", f"{corr:.2f}")
+    
+    def render_risk_metrics(self, df: pd.DataFrame):
+        """Render risk metrics"""
+        st.subheader("⚠️ Risk Analysis")
+        risk_metrics = self.technical_indicators.calculate_risk_metrics(df)
+
+        if risk_metrics:
+            r1, r2, r3, r4, r5 = st.columns(5)
+            r1.metric("Annual Return", f"{risk_metrics['annual_return']*100:.2f}%")
+            r2.metric("Volatility", f"{risk_metrics['volatility']*100:.2f}%")
+            r3.metric("Sharpe Ratio", f"{risk_metrics['sharpe']:.2f}")
+            r4.metric("Sortino Ratio", f"{risk_metrics['sortino']:.2f}")
+            r5.metric("Max Drawdown", f"{risk_metrics['max_drawdown']*100:.2f}%")
+    
+    def render_price_charts(self, df: pd.DataFrame, settings: Dict):
+        """Render price charts with technical indicators"""
+        st.markdown("---")
+        st.subheader("📉 Price Chart with Technical Indicators")
+
+        fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05,
+                          row_heights=[0.5, 0.25, 0.25], subplot_titles=('Price & Indicators', 'RSI', 'MACD'))
+
+        fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price'), row=1, col=1)
+
+        if 'SMA_short' in df:
+            fig.add_trace(go.Scatter(x=df.index, y=df['SMA_short'], mode='lines', name=f'SMA {settings["rsi_params"]["period"]}', line=dict(width=1, color='orange')), row=1, col=1)
+        if 'SMA_long' in df:
+            fig.add_trace(go.Scatter(x=df.index, y=df['SMA_long'], mode='lines', name=f'SMA 50', line=dict(width=1, color='blue')), row=1, col=1)
+        if 'BB_upper' in df and 'BB_lower' in df:
+            fig.add_trace(go.Scatter(x=df.index, y=df['BB_upper'], mode='lines', name='BB Upper', line=dict(dash='dot', width=1, color='gray')), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df['BB_lower'], mode='lines', name='BB Lower', line=dict(dash='dot', width=1, color='gray')), row=1, col=1)
+
+        fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], mode='lines', name='RSI', line=dict(color='purple')), row=2, col=1)
+        fig.add_hline(y=settings['rsi_params']['overbought'], line_dash="dash", line_color="red", row=2, col=1)
+        fig.add_hline(y=settings['rsi_params']['oversold'], line_dash="dash", line_color="green", row=2, col=1)
+
+        fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], mode='lines', name='MACD', line=dict(color='blue')), row=3, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['MACD_signal'], mode='lines', name='Signal', line=dict(color='red')), row=3, col=1)
+        fig.add_trace(go.Bar(x=df.index, y=df['MACD_hist'], name='Histogram'), row=3, col=1)
+
+        fig.update_layout(height=600, xaxis_rangeslider_visible=False, showlegend=True)
+        st.plotly_chart(fig, use_container_width=True)
+    
+    def render_rule_based_signals(self, df: pd.DataFrame, settings: Dict):
+        """Render rule-based trading signals"""
+        st.markdown("---")
+        st.subheader("🎯 Rule-Based Trading Signals")
+
+        recommendation, signals, confidence, raw_scores = self.technical_indicators.rule_based_signal_v2(
+            df, 
+            rsi_oversold=settings['rsi_params']['oversold'], 
+            rsi_overbought=settings['rsi_params']['overbought'], 
+            weights=settings['weights']
+        )
+
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            color = "green" if "BUY" in recommendation else "red" if "SELL" in recommendation else "orange"
+            st.markdown(f"<h2 style='color:{color}; text-align:center;'>{recommendation}</h2>", unsafe_allow_html=True)
+            st.markdown(f"<h4 style='text-align:center;'>Confidence: {confidence:.1f}%</h4>", unsafe_allow_html=True)
+            st.metric("Buy Score", f"{raw_scores['buy']:.2f}")
+            st.metric("Sell Score", f"{raw_scores['sell']:.2f}")
+            st.metric("Net Score", f"{raw_scores['net']:.2f}")
+
+        with col2:
+            st.write("**Signal Breakdown:**")
+            for signal_text, signal_type, weight, extra in signals:
+                emoji = {"BUY": "🟢", "SELL": "🔴", "CONFIRM": "✅", "AMPLIFY": "📈", "DAMPEN": "📉"}.get(signal_type, "⚪")
+                display_text = f"{emoji} {signal_text}"
+                if extra:
+                    display_text += f" ({extra})"
+                if weight > 0:
+                    display_text += f" [w={weight:.2f}]"
+                st.write(display_text)
+    
+    def render_news_section(self, ticker: str, settings: Dict):
+        """Render news section with sentiment analysis"""
+        st.markdown("---")
+        st.header(f"📰 Latest News & Sentiment for {ticker}")
+
+        # News source selection
+        col_source, col_refresh = st.columns([3, 1])
+        with col_source:
+            news_source = st.selectbox(
+                "📡 News Source:",
+                options=self.config.NEWS_SOURCES,
+                index=0,
+                key="news_source_selector"
+            )
+        with col_refresh:
+            st.write("")
+            if st.button("🔄 Refresh News", key="refresh_news", type="secondary"):
+                # Clear news cache for this ticker
+                cache_key = f"news_{ticker}_{news_source}"
+                if cache_key in st.session_state["news_cache"]:
+                    del st.session_state["news_cache"][cache_key]
+                st.rerun()
+
+        # Fetch and display news
+        cache_key = f"news_{ticker}_{news_source}"
+        if cache_key in st.session_state["news_cache"]:
+            news_data = st.session_state["news_cache"][cache_key]
+        else:
+            with st.spinner(f"Fetching news from {news_source}..."):
+                news_data = self.news_fetcher.get_news(ticker, news_source)
+                # Analyze sentiment
+                if news_data:
+                    news_data = self.sentiment_analyzer.analyze_news_batch(news_data, settings['use_finbert'])
+                st.session_state["news_cache"][cache_key] = news_data
+
+        if news_data:
+            st.subheader(f"📰 Latest News from {news_source}")
+            
+            # Create DataFrame for display
+            news_display = []
+            for item in news_data:
+                news_display.append({
+                    'Time': f"{item.get('Date', 'N/A')} {item.get('Time', 'N/A')}",
+                    'Headline': item['Title'],
+                    'Source': item['Source'],
+                    'Sentiment': f"{item.get('sentiment_emoji', '⚪')} {item.get('sentiment_label', 'N/A')}",
+                    'Score': f"{item.get('sentiment_score', 0):.2f}"
+                })
+            
+            news_df = pd.DataFrame(news_display)
+            st.dataframe(news_df, use_container_width=True, hide_index=True)
+            
+            # Sentiment summary
+            if len(news_data) > 0:
+                sentiment_scores = [item.get('sentiment_score', 0) for item in news_data]
+                avg_sentiment = sum(sentiment_scores) / len(sentiment_scores)
+                
+                positive_count = sum(1 for s in sentiment_scores if s >= 0.05)
+                neutral_count = sum(1 for s in sentiment_scores if -0.05 < s < 0.05)
+                negative_count = sum(1 for s in sentiment_scores if s <= -0.05)
+                
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("🟢 Positive", positive_count)
+                col2.metric("🟡 Neutral", neutral_count)
+                col3.metric("🔴 Negative", negative_count)
+                col4.metric("Avg Score", f"{avg_sentiment:.2f}")
+        else:
+            st.info(f"📭 No recent news available from {news_source}")
     
     def run(self):
         """Main method to run the dashboard"""
         try:
             self.setup_ui()
             settings = self.render_sidebar()
-            self.render_market_overview()
             
-            # Show memory usage
-            memory_usage = self.memory_manager.get_memory_usage()
-            if memory_usage != "N/A":
-                st.sidebar.caption(f"Memory usage: {memory_usage:.1f} MB")
+            if not settings['tickers']:
+                st.warning("Please enter at least one stock ticker in the sidebar")
+                return
             
-            # Process selected ticker
-            if settings['tickers']:
-                selected = st.selectbox(
-                    "Choose ticker to analyze", 
-                    options=settings['tickers'], 
-                    label_visibility="collapsed"
-                )
-                
-                if selected:
-                    self.analyze_stock(selected, settings)
+            selected_ticker = self.render_market_overview(settings['tickers'])
             
-            # Cleanup
+            if not selected_ticker:
+                return
+
+            # Analyze selected stock
+            with st.spinner(f"Analyzing {selected_ticker}..."):
+                self.analyze_stock(selected_ticker, settings)
+            
+            # Cleanup on refresh
             if settings['refresh']:
                 self.memory_manager.clear_cache()
                 st.rerun()
@@ -894,94 +1069,47 @@ class EnhancedStockDashboard:
     def analyze_stock(self, ticker: str, settings: Dict):
         """Analyze a single stock"""
         try:
-            # Show progress
-            with st.spinner(f"Loading data for {ticker}..."):
-                cache_key = f"{ticker}_{settings['lookback']}_{settings['interval']}"
-                
-                # Fetch data with caching
-                if cache_key in st.session_state["data_cache"] and not settings['refresh']:
-                    hist, info = st.session_state["data_cache"][cache_key]
-                else:
-                    hist, info = self.data_fetcher.get_stock_data(
-                        ticker, 
-                        period=settings['lookback'], 
-                        interval=settings['interval']
-                    )
-                    st.session_state["data_cache"][cache_key] = (hist, info)
-                    # Clear dependent caches
-                    if cache_key in st.session_state["ml_cache"]:
-                        del st.session_state["ml_cache"][cache_key]
-                
-                if hist.empty:
-                    st.error(f"❌ No data available for {ticker}")
-                    return
+            # Fetch data
+            cache_key = f"{ticker}_{settings['lookback']}_{settings['interval']}"
+            
+            if cache_key in st.session_state["data_cache"] and not settings['refresh']:
+                hist, info = st.session_state["data_cache"][cache_key]
+            else:
+                hist, info = self.data_fetcher.get_stock_data(
+                    ticker, 
+                    period=settings['lookback'], 
+                    interval=settings['interval']
+                )
+                st.session_state["data_cache"][cache_key] = (hist, info)
+            
+            if hist.empty:
+                st.error(f"❌ No data available for {ticker}")
+                return
             
             # Calculate indicators
-            with st.spinner("Calculating technical indicators..."):
-                df = self.technical_indicators.calculate_indicators(hist, **settings['rsi_params'])
-                is_valid, validation = self.technical_indicators.validate_indicators(df)
-                if not is_valid:
-                    st.warning(f"⚠️ Data quality issue: {validation}")
+            df = self.technical_indicators.calculate_indicators(hist, **settings['rsi_params'])
+            is_valid, validation = self.technical_indicators.validate_indicators(df)
+            if not is_valid:
+                st.warning(f"⚠️ Data quality issue: {validation}")
             
-            # Render stock analysis (price charts, metrics, etc.)
-            self.render_stock_analysis(ticker, df, info, settings)
+            # Render analysis sections
+            st.header(f"🔍 Deep Dive: {ticker} ({info.get('shortName', ticker)})")
+            
+            # Get SPY data for correlation
+            spy_data = self.data_fetcher.get_spy_data()
+            
+            # Render all sections
+            self.render_key_metrics(df, info, spy_data)
+            self.render_risk_metrics(df)
+            self.render_price_charts(df, settings)
+            self.render_rule_based_signals(df, settings)
+            self.render_news_section(ticker, settings)
             
         except DataFetchError as e:
             st.error(f"❌ Data fetch error for {ticker}: {str(e)}")
         except Exception as e:
             logger.error(f"Stock analysis failed for {ticker}: {str(e)}")
             st.error(f"❌ Analysis failed for {ticker}. Please try again.")
-    
-    def render_stock_analysis(self, ticker: str, df: pd.DataFrame, info: Dict, settings: Dict):
-        """Render the stock analysis section"""
-        # Implementation of price charts, metrics, news, ML analysis, etc.
-        # This would include all the visualization components from the original code
-        # but with proper error handling and progress indicators
-        
-        st.header(f"🔍 Deep Dive: {ticker}")
-        
-        # Key metrics
-        self.render_key_metrics(df, info)
-        
-        # Risk metrics
-        self.render_risk_metrics(df)
-        
-        # Price charts
-        self.render_price_charts(df, settings)
-        
-        # News section
-        self.render_news_section(ticker, settings)
-        
-        # ML analysis
-        self.render_ml_analysis(df, ticker, settings)
-        
-        # Clean up memory after analysis
-        self.memory_manager.cleanup_ml_models()
-
-    def render_key_metrics(self, df: pd.DataFrame, info: Dict):
-        """Render key stock metrics"""
-        # Implementation...
-        pass
-
-    def render_risk_metrics(self, df: pd.DataFrame):
-        """Render risk metrics"""
-        # Implementation...
-        pass
-
-    def render_price_charts(self, df: pd.DataFrame, settings: Dict):
-        """Render price charts with technical indicators"""
-        # Implementation...
-        pass
-
-    def render_news_section(self, ticker: str, settings: Dict):
-        """Render news section with sentiment analysis"""
-        # Implementation...
-        pass
-
-    def render_ml_analysis(self, df: pd.DataFrame, ticker: str, settings: Dict):
-        """Render ML analysis section"""
-        # Implementation...
-        pass
 
 # ==================== APPLICATION ENTRY POINT ====================
 def main():
@@ -990,7 +1118,6 @@ def main():
         dashboard = EnhancedStockDashboard()
         dashboard.run()
     except Exception as e:
-        logger.critical(f"Application failed to start: {str(e)}")
         st.error("""
         ❌ Critical application error. 
         
@@ -998,7 +1125,6 @@ def main():
         1. Refresh the page
         2. Check your internet connection
         3. Reduce the number of tickers being analyzed
-        4. Contact support if the issue persists
         """)
 
 if __name__ == "__main__":
